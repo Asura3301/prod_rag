@@ -4,7 +4,8 @@ from pathlib import Path
 from langchain_community.document_loaders import (TextLoader) # Depricated version (MUST BE REPLACED)
 
 from langchain_core.documents import Document
-from langchain_docling.loaders import DoclingLoader
+from langchain_docling.loaders import DoclingLoader, ExportType
+from docling.chunking import HybridChunker
 
 from dotenv import load_dotenv
 
@@ -13,7 +14,7 @@ load_dotenv()
 #----------------------------------------------------------
 # Configuration
 FILE_PATH = os.getenv("FILE_PATH")
-EXPORT_TYPE = os.getenv("EXPORT_TYPE")
+EXPORT_TYPE = ExportType.DOC_CHUNKS
 EMBED_MODEL_ID = os.getenv("EMBED_MODEL_ID")
 
 #----------------------------------------------------------
@@ -70,6 +71,12 @@ class DoclingLoader:
             print(f"{doc.page_content[:100]}")
         return docs
     
-    
+#---------
+# Unstructured Loader
+class UnstructuredLoader:
+    #TODO
+
+
+#----------------------------------------------------------
 if __name__ == "__main__":
     load_text_file()
