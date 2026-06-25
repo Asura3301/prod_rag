@@ -12,6 +12,15 @@ dependencies = [
     "langchain-core>=1.4.2",
     "langchain-docling>=2.0.0",
     "langchain-openai>=1.2.2",
+    "langchain-unstructured[local]>=1.0.1",
     "langgraph>=1.2.4",
     "python-dotenv>=1.2.2",
+    # Additional loaders dependencies
+    "pypdf>=4.0.0",          # PyPDFLoader fallback
+    "jq>=1.6.0",             # JSONLoader requires python jq
+    "beautifulsoup4>=4.12.0",# WebBaseLoader HTML parsing
+    "lxml>=5.0.0",           # Robust HTML/XML parser for BeautifulSoup
+    "tqdm>=4.66.0",          # DirectoryLoader progress bar
+    "pandas>=2.0.0",         # CSV/Excel structured handling
+    "openpyxl>=3.1.0",       # .xlsx support for CSV/Excel loaders
 ]
