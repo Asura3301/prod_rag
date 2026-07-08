@@ -4,7 +4,8 @@ from pathlib import Path
 from typing import Iterable
 
 from langchain_core.documents import Document
-from langchain_docling.loaders import DoclingLoader, ExportType
+from langchain_docling import DoclingLoader
+from langchain_docling.loader import ExportType
 from langchain_unstructured import UnstructuredLoader
 from docling.chunking import HybridChunker
 
@@ -31,7 +32,7 @@ EMBED_MODEL_ID = os.getenv("EMBED_MODEL_ID")
 # Routing tables — which loader handles which file extension.
 # Docling is preferred for rich-layout documents (PDF, modern Office, HTML, MD, notebooks).
 # Unstructured is the fallback for legacy/binary formats Docling cannot parse.
-DOCLING_EXTS = {".pdf", ".docx", ".pptx", ".xlsx", ".html", ".xhtml", ".md", ".ipynb"}
+DOCLING_EXTS = {".pdf", ".docx", ".pptx", ".xlsx", ".html", ".xhtml", ".md"}
 UNSTRUCTURED_EXTS = {
     ".doc", ".ppt", ".xls", ".rtf", ".epub", ".eml", ".msg",
     ".odt", ".odp", ".ods", ".rst", ".org",
@@ -256,10 +257,10 @@ def route_loader(file_path: str | Path) -> list[Document]:
             raise
 
     if ext in UNSTRUCTURED_EXTS:
-        return UnstructuredDocumentLoader().load(path)
+        return UnstructuredDocumentLoader().load(path) 
 
     # Plain text and anything else -> TextLoader, then Unstructured as last resort.
-    if ext in {".txt", ".log", ".py", ".js", ".ts", ".sh", ".yaml", ".yml", ".ini", ".cfg"}:
+    if ext in {".txt", ".log", ".py", ".js", ".ts", ".sh", ".yaml", ".yml", ".ini", ".cfg", ".ipynb"}:
         docs = TextLoader(str(path), encoding="utf-8").load()
         docs = _tag(docs, path, "text")
         return docs
