@@ -30,7 +30,7 @@ dependencies = [
     "uvicorn[standard]>=0.34",
     # Additional loaders dependencies
     "pypdf>=4.0.0",          # PyPDFLoader fallback
-    "jq>=1.6.0",             # JSONLoader requires python jq
+    "jq>=1.12.0",             # JSONLoader requires python jq
     "beautifulsoup4>=4.12.0",# WebBaseLoader HTML parsing
     "lxml>=5.0.0",           # Robust HTML/XML parser for BeautifulSoup
     "tqdm>=4.66.0",          # DirectoryLoader progress bar
