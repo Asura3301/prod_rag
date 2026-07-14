@@ -63,7 +63,7 @@ observability = [
 
 [dependency-groups]
 dev = [
-    "coverage[toml]>=7.8",
+    "coverage[toml]>=7.15.1",
     "mypy>=1.16",
     "pre-commit>=4.2",
     "pytest>=8.4",
