@@ -1,0 +1,252 @@
+%%{init: {
+  "theme": "base",
+  "themeVariables": {
+    "fontFamily": "Inter, Segoe UI, Arial",
+    "fontSize": "14px",
+    "lineColor": "#64748b",
+    "primaryTextColor": "#0f172a",
+    "clusterBkg": "#f8fafc",
+    "clusterBorder": "#cbd5e1"
+  },
+  "flowchart": {
+    "curve": "basis",
+    "nodeSpacing": 28,
+    "rankSpacing": 42,
+    "padding": 14,
+    "htmlLabels": true
+  }
+}}%%
+flowchart TB
+
+  subgraph EXT["Внешние акторы и источники"]
+    direction LR
+    USER(["API-клиент / пользователь"])
+    ADMIN(["Оператор / SRE"])
+    FILES[("Локальные файлы и каталоги<br/>PDF, DOCX, PPTX, HTML, TXT, MD,<br/>CSV, JSON, XLSX")]
+    MODELS[["LLM-провайдеры<br/>OpenAI / Anthropic / OpenAI-compatible / local"]]
+    EMBEDS[["Embedding-провайдеры<br/>OpenAI-compatible / Hugging Face / hash baseline"]]
+  end
+
+  subgraph EDGE["Контейнер API — FastAPI / Uvicorn"]
+    direction LR
+    CLI["CLI rag<br/>serve · query · ingest · evaluate"]
+    HTTP["Versioned HTTP API<br/>/api/v1/*"]
+    MW{"Security middleware<br/>Bearer API token<br/>rate limit per IP<br/>body-size limit<br/>X-Request-ID"}
+    ROUTES["Маршруты<br/>ingestion jobs · documents<br/>query · SSE stream"]
+    HEALTH["Health & admin<br/>/health/live · /health/ready<br/>/metrics · /debug/state"]
+    DI["create_app(service, queue)<br/>dependency-injection boundary"]
+    CLI -->|"serve / HTTP client"| HTTP
+    USER -->|"HTTPS / JSON / SSE"| HTTP
+    HTTP --> MW --> ROUTES --> DI
+    ADMIN -->|"Admin Bearer token"| HEALTH
+  end
+
+  subgraph NOW["Фактически подключённый runtime по умолчанию"]
+    direction LR
+    MEMSVC["InMemoryRAGService<br/>document-level lexical overlap<br/>CRUD in process memory"]
+    MEMQ["InMemoryJobQueue<br/>если REDIS_URL отсутствует"]
+    REDISQ["RedisJobQueue<br/>если REDIS_URL задан"]
+    APIOUT["QueryResponse / SSE<br/>answer · citations · latency<br/>stream: готовый answer делится на слова<br/>token → citations → done"]
+    DI -->|"service=None"| MEMSVC --> APIOUT -->|"HTTP/SSE"| USER
+    DI -->|"queue=None"| MEMQ
+    DI -->|"REDIS_URL"| REDISQ
+    ROUTES -->|"POST /documents"| MEMSVC
+    ROUTES -->|"POST /query"| MEMSVC
+  end
+
+  subgraph ASYNC["Асинхронный ingestion-процесс — реализован и подключён"]
+    direction LR
+    ENQUEUE["POST /ingestion/jobs<br/>idempotency key = supplied<br/>или ingest:source"]
+    JOBSTATE{"Job state machine<br/>pending → running → succeeded<br/>ошибка: pending retry → dead_letter<br/>cancelled — best effort"}
+    REDIS[("Redis 7<br/>queue · job JSON<br/>idempotency keys · AOF")]
+    WORKER["Worker process<br/>claim → handler → complete/fail<br/>max attempts = 3"]
+    INGEST["IngestionPipeline<br/>sync work вынесено через asyncio.to_thread"]
+    DISCOVER["Source discovery + validation<br/>allowed extension/root/size<br/>deterministic order"]
+    LOAD["Loader router<br/>Docling · Unstructured · CSV/JSON<br/>Web · Directory · PyPDF fallback"]
+    HASH{"SHA-256 до/после load<br/>источник изменился?"}
+    CHUNK["StructureAwareChunker<br/>Markdown sections + TextChunker<br/>bounded overlap windows"]
+    IDS["Deterministic identity<br/>document_id · content_id · chunk_id<br/>content hash · version · schema version"]
+    REG[("InMemoryDocumentRegistry<br/>latest immutable record per source<br/>idempotent within one worker process")]
+    GAP["Важный текущий разрыв<br/>worker заканчивает после load/chunk/register;<br/>IndexingService не вызывается"]
+
+    ROUTES --> ENQUEUE
+    ENQUEUE -->|"enqueue"| MEMQ
+    ENQUEUE -->|"enqueue"| REDISQ
+    REDISQ --> REDIS
+    MEMQ --> JOBSTATE
+    REDIS --> JOBSTATE
+    JOBSTATE -->|"claim"| WORKER
+    WORKER -->|"kind=ingest"| INGEST
+    FILES --> DISCOVER --> HASH
+    HASH -->|"стабилен"| LOAD --> CHUNK --> IDS --> REG --> GAP
+    HASH -->|"изменился / ошибка"| JOBSTATE
+    INGEST --> DISCOVER
+    WORKER -->|"success / retry / dead letter"| JOBSTATE
+  end
+
+  subgraph PROD["Production-компоненты в кодовой базе — требуют сборки custom RAGService и worker handler"]
+    direction TB
+
+    subgraph INDEX["Индексирование"]
+      direction LR
+      IBRIDGE["Интеграционный мост<br/>передать chunks из IngestionPipeline<br/>в async IndexingService"]
+      ISVC["IndexingService<br/>normalize fields → embed → VectorRecord → upsert"]
+      CACHE["BatchedCachedEmbeddingProvider<br/>batching + cache key = model_id:content_hash"]
+      DENSE["Dense embeddings"]
+      SPARSE["Optional sparse embeddings<br/>HashSparse baseline"]
+      IBRIDGE --> ISVC
+      ISVC --> CACHE --> DENSE
+      ISVC --> SPARSE
+      EMBEDS --> DENSE
+    end
+
+    subgraph RET["HybridRetriever — query pipeline"]
+      direction LR
+      REQ["RetrievalRequest<br/>query · top_k · profile<br/>tenant_id · principals · filters<br/>token/character budget"]
+      PREFILTER{"Server-side filters<br/>tenant + ACL<br/>до ранжирования в обеих ветках"}
+      DQ["Dense candidate search<br/>query embedding + cosine / ANN"]
+      LQ["Lexical candidate search<br/>Qdrant sparse OR Postgres FTS<br/>fallback BM25 scan"]
+      RRF["Reciprocal Rank Fusion<br/>Σ 1/(60 + rank)<br/>не смешивает сырые score scales"]
+      RERANK["Quality profile<br/>cross-encoder reranker<br/>BAAI/bge-reranker-base default"]
+      EXPAND["Context expansion<br/>adjacent chunks / parent chunks"]
+      DEDUPE["Deduplicate<br/>chunk ID + SHA-256(content)"]
+      BUDGET["Context budget<br/>max tokens / characters<br/>then final top_k"]
+      DIAG["RetrievalDiagnostics<br/>candidate counts · timings<br/>truncation · token estimate"]
+      GAPQ["Query integration gap<br/>HybridRetriever.retrieve — async method;<br/>RAGWorkflow ожидает callable / invoke без await"]
+
+      REQ --> PREFILTER
+      PREFILTER -->|"parallel"| DQ
+      PREFILTER -->|"balanced / quality"| LQ
+      DQ --> RRF
+      LQ --> RRF
+      RRF -->|"fast"| DEDUPE
+      RRF -->|"balanced + injected hooks"| EXPAND
+      RRF -->|"quality"| RERANK -->|"injected hooks"| EXPAND
+      EXPAND --> DEDUPE --> BUDGET
+      DQ -.-> DIAG
+      LQ -.-> DIAG
+      RRF -.-> DIAG
+      BUDGET -.-> DIAG
+    end
+
+    subgraph GEN["Bounded LangGraph generation workflow"]
+      direction LR
+      G0(["START"])
+      VALID{"Validate request<br/>non-empty?"}
+      ANALYZE["Normalize query<br/>deterministic, no LLM call"]
+      RETRIEVE["Retrieve evidence<br/>max 8 items by default"]
+      GRADE{"Grade evidence<br/>optional minimum score"}
+      REWRITE["One bounded query rewrite<br/>LLM call; max_rewrites = 1"]
+      CTX["Build grounded context<br/>source/page/section + [C1..Cn]<br/>max context chars"]
+      ANSWER["Generate answer from evidence only<br/>LLM provider"]
+      CITE{"Validate citations<br/>all IDs exist and at least one cited?"}
+      ABSTAIN["Abstain safely<br/>insufficient evidence / invalid citations"]
+      FINAL["Finalize response<br/>answered · abstained · invalid_request<br/>clear transient evidence/context"]
+      GEND(["END"])
+      CHECKPOINT[("Optional PostgresSaver<br/>LangGraph checkpoints per step")]
+
+      G0 --> VALID
+      VALID -->|"yes"| ANALYZE --> RETRIEVE --> GRADE
+      VALID -->|"no"| FINAL
+      GRADE -->|"evidence"| CTX
+      GRADE -->|"empty, first attempt"| REWRITE --> RETRIEVE
+      GRADE -->|"empty after rewrite"| CTX
+      CTX --> ANSWER --> CITE
+      CITE -->|"valid"| FINAL --> GEND
+      CITE -->|"missing / invalid"| ABSTAIN --> FINAL
+      MODELS --> ANSWER
+      MODELS --> REWRITE
+      VALID -.-> CHECKPOINT
+      RETRIEVE -.-> CHECKPOINT
+      FINAL -.-> CHECKPOINT
+    end
+  end
+
+  subgraph DATA["Взаимозаменяемые хранилища и профили deployment"]
+    direction LR
+    MEMORY[("InMemoryVectorStore<br/>exact cosine + scan<br/>только tests/demos")]
+    QDRANT[("Qdrant<br/>named dense + sparse vectors<br/>payload prefilter")]
+    PGV[("PostgreSQL 16 + pgvector<br/>HNSW cosine index<br/>tsvector + GIN lexical index")]
+    PGREG[("PostgreSQL registry schema<br/>document_registry · ingestion_jobs<br/>migration exists; adapters не подключены")]
+    DENSE --> MEMORY
+    DENSE --> QDRANT
+    DENSE --> PGV
+    SPARSE --> QDRANT
+    ISVC -->|"upsert / delete"| MEMORY
+    ISVC -->|"upsert / delete"| QDRANT
+    ISVC -->|"upsert / delete"| PGV
+    DQ --> MEMORY
+    DQ --> QDRANT
+    DQ --> PGV
+    LQ --> QDRANT
+    LQ --> PGV
+  end
+
+  subgraph PROFILE["Retrieval profiles"]
+    direction LR
+    FAST["fast<br/>dense only<br/>2× candidates"]
+    BAL["balanced<br/>dense + lexical + RRF<br/>4× candidates; expansion hooks optional"]
+    QUAL["quality<br/>hybrid + reranker<br/>8× candidates; expansion hooks optional"]
+    REQ --> FAST
+    REQ --> BAL
+    REQ --> QUAL
+  end
+
+  subgraph EVALOPS["Качество, безопасность и эксплуатация"]
+    direction LR
+    GOLD[("Golden dataset JSONL<br/>query · relevant IDs<br/>expected citations · reference answer")]
+    EVAL["Evaluation runner<br/>Recall@k · Precision@k · MRR · nDCG<br/>citation precision/recall · latency p95"]
+    GATE{"Candidate vs baseline<br/>release gate / regression tolerance"}
+    OBS["Observability<br/>structured JSON logs<br/>request IDs · Prometheus text metrics<br/>optional OpenTelemetry OTLP"]
+    DEPLOY["Docker Compose profiles<br/>api + redis<br/>workers + exactly one vector backend"]
+    SEC["Security invariants<br/>API/admin tokens · tenant/ACL prefilter<br/>retrieved text treated as untrusted<br/>private data-service networks"]
+
+    GOLD --> EVAL --> GATE
+    BUDGET -.->|"predictions + latency"| EVAL
+    FINAL -.->|"citations + status"| EVAL
+    EDGE -.-> OBS
+    ASYNC -.-> OBS
+    PROD -.-> OBS
+    DEPLOY -.-> EDGE
+    DEPLOY -.-> WORKER
+    DEPLOY -.-> REDIS
+    DEPLOY -.-> QDRANT
+    DEPLOY -.-> PGV
+    SEC -.-> MW
+    SEC -.-> PREFILTER
+    SEC -.-> ANSWER
+  end
+
+  GAP -.->|"нужно реализовать wiring"| IBRIDGE
+  BUDGET -.->|"нужен async/callable adapter"| GAPQ
+  GAPQ -.->|"evidence"| RETRIEVE
+  FINAL -.->|"custom RAGService adapter"| DI
+  PGV -.-> CHECKPOINT
+  PGREG -.-> IBRIDGE
+
+  subgraph LEGEND["Легенда"]
+    direction LR
+    L1["Сплошная стрелка<br/>подключённый runtime / data flow"]:::current
+    L2["Пунктирная стрелка<br/>optional, telemetry или ещё не собранное wiring"]:::optional
+    L3[("Хранилище / внешняя инфраструктура")]:::store
+    L4["Реализованный модуль,<br/>ожидающий production composition"]:::module
+    L5["Архитектурный gap / риск"]:::gap
+  end
+
+  classDef actor fill:#f1f5f9,stroke:#64748b,color:#0f172a,stroke-width:1.5px;
+  classDef current fill:#dbeafe,stroke:#2563eb,color:#0f172a,stroke-width:2px;
+  classDef module fill:#ede9fe,stroke:#7c3aed,color:#1e1b4b,stroke-width:1.5px;
+  classDef store fill:#ffedd5,stroke:#ea580c,color:#431407,stroke-width:1.5px;
+  classDef guard fill:#fee2e2,stroke:#dc2626,color:#450a0a,stroke-width:1.5px;
+  classDef quality fill:#dcfce7,stroke:#16a34a,color:#052e16,stroke-width:1.5px;
+  classDef gap fill:#fef3c7,stroke:#d97706,color:#451a03,stroke-width:3px;
+  classDef optional fill:#f8fafc,stroke:#94a3b8,color:#334155,stroke-width:1.5px,stroke-dasharray:5 4;
+
+  class USER,ADMIN,FILES,MODELS,EMBEDS actor;
+  class CLI,HTTP,ROUTES,DI,MEMSVC,MEMQ,REDISQ,APIOUT,ENQUEUE,JOBSTATE,WORKER,INGEST,DISCOVER,LOAD,HASH,CHUNK,IDS,REG current;
+  class MW,VALID,GRADE,CITE,SEC guard;
+  class IBRIDGE,ISVC,CACHE,DENSE,SPARSE,REQ,PREFILTER,DQ,LQ,RRF,RERANK,EXPAND,DEDUPE,BUDGET,DIAG,G0,ANALYZE,RETRIEVE,REWRITE,CTX,ANSWER,ABSTAIN,FINAL,GEND,FAST,BAL,QUAL module;
+  class REDIS,MEMORY,QDRANT,PGV,PGREG,CHECKPOINT store;
+  class GOLD,EVAL,GATE,OBS quality;
+  class GAP,GAPQ gap;
+  class HEALTH,DEPLOY optional;

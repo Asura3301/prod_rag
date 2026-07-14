@@ -1,4 +1,4 @@
-# Production RAG
+# Production RAG Template
 
 A production-oriented retrieval-augmented generation service with explicit boundaries for
 ingestion, retrieval/generation, asynchronous work, evaluation, and operations. The API and
@@ -35,20 +35,20 @@ through `create_app(service=..., queue=...)`.
 ## Architecture and profiles
 
 - Ingestion: validated local/web sources, Docling for layout-rich documents,
-  Unstructured for legacy formats, specialized CSV/JSON loaders, deterministic
-  chunk IDs, hashes, versions, and idempotent registry behavior.
+Unstructured for legacy formats, specialized CSV/JSON loaders, deterministic
+chunk IDs, hashes, versions, and idempotent registry behavior.
 - Indexing: cached/batched dense embeddings plus optional sparse embeddings.
-  Qdrant uses named dense/sparse vectors; pgvector uses HNSW plus PostgreSQL
-  full-text search.
+Qdrant uses named dense/sparse vectors; pgvector uses HNSW plus PostgreSQL
+full-text search.
 - Retrieval: `fast` (dense), `balanced` (dense + lexical + RRF), and `quality`
-  (hybrid + reranker + neighboring context) profiles with ACL filters applied
-  before ranking.
+(hybrid + reranker + neighboring context) profiles with ACL filters applied
+before ranking.
 - Generation: a bounded LangGraph workflow that retries retrieval at most once,
-  validates citations, abstains without evidence, and accepts a production
-  Postgres checkpointer.
+validates citations, abstains without evidence, and accepts a production
+Postgres checkpointer.
 - Operations: FastAPI, SSE, Redis-backed jobs, request IDs, API/admin tokens,
-  rate limiting, structured logs, Prometheus-compatible metrics, and optional
-  OpenTelemetry export.
+rate limiting, structured logs, Prometheus-compatible metrics, and optional
+OpenTelemetry export.
 
 The primary adapters are Qdrant and PostgreSQL/pgvector. The deterministic
 in-memory store and hash embeddings exist for tests and demos; they are not
@@ -98,13 +98,9 @@ latency reports, and enforces candidate-versus-baseline tolerances. The starter
 dataset is intentionally small and must be replaced or extended with reviewed,
 domain-specific cases before making quality claims.
 
-## Project status
+## LICENSE
 
-The repository is a production-oriented template, not a claim that one model or
-retrieval profile is universally state of the art. Publish corpus provenance,
-model/index versions, hardware, latency, cost, and quality metrics before making
-comparative claims. The default service is safe for local smoke tests but is
-not persistent production storage.
+[MIT](LICENSE)
 
 Contributions follow [CONTRIBUTING.md](CONTRIBUTING.md). Report vulnerabilities according to
 [SECURITY.md](SECURITY.md).
