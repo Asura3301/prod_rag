@@ -1,38 +1,20 @@
-%%{init: {
-  "theme": "base",
-  "themeVariables": {
-    "fontFamily": "Inter, Segoe UI, Arial",
-    "fontSize": "14px",
-    "lineColor": "#64748b",
-    "primaryTextColor": "#0f172a",
-    "clusterBkg": "#f8fafc",
-    "clusterBorder": "#cbd5e1"
-  },
-  "flowchart": {
-    "curve": "basis",
-    "nodeSpacing": 28,
-    "rankSpacing": 42,
-    "padding": 14,
-    "htmlLabels": true
-  }
-}}%%
 flowchart TB
 
-  subgraph EXT["Внешние акторы и источники"]
+  subgraph EXT["External actors and sources"]
     direction LR
-    USER(["API-клиент / пользователь"])
-    ADMIN(["Оператор / SRE"])
-    FILES[("Локальные файлы и каталоги<br/>PDF, DOCX, PPTX, HTML, TXT, MD,<br/>CSV, JSON, XLSX")]
-    MODELS[["LLM-провайдеры<br/>OpenAI / Anthropic / OpenAI-compatible / local"]]
-    EMBEDS[["Embedding-провайдеры<br/>OpenAI-compatible / Hugging Face / hash baseline"]]
+    USER(["API client / end user"])
+    ADMIN(["Operator / SRE"])
+    FILES[("Local files and directories<br/>PDF, DOCX, PPTX, HTML, TXT, MD,<br/>CSV, JSON, XLSX")]
+    MODELS[["LLM providers<br/>OpenAI / Anthropic / OpenAI-compatible / local"]]
+    EMBEDS[["Embedding providers<br/>OpenAI-compatible / Hugging Face / hash baseline"]]
   end
 
-  subgraph EDGE["Контейнер API — FastAPI / Uvicorn"]
+  subgraph EDGE["API container — FastAPI / Uvicorn"]
     direction LR
     CLI["CLI rag<br/>serve · query · ingest · evaluate"]
     HTTP["Versioned HTTP API<br/>/api/v1/*"]
     MW{"Security middleware<br/>Bearer API token<br/>rate limit per IP<br/>body-size limit<br/>X-Request-ID"}
-    ROUTES["Маршруты<br/>ingestion jobs · documents<br/>query · SSE stream"]
+    ROUTES["Routes<br/>ingestion jobs · documents<br/>query · SSE stream"]
     HEALTH["Health & admin<br/>/health/live · /health/ready<br/>/metrics · /debug/state"]
     DI["create_app(service, queue)<br/>dependency-injection boundary"]
     CLI -->|"serve / HTTP client"| HTTP
@@ -41,12 +23,12 @@ flowchart TB
     ADMIN -->|"Admin Bearer token"| HEALTH
   end
 
-  subgraph NOW["Фактически подключённый runtime по умолчанию"]
+  subgraph NOW["Default runtime currently wired"]
     direction LR
     MEMSVC["InMemoryRAGService<br/>document-level lexical overlap<br/>CRUD in process memory"]
-    MEMQ["InMemoryJobQueue<br/>если REDIS_URL отсутствует"]
-    REDISQ["RedisJobQueue<br/>если REDIS_URL задан"]
-    APIOUT["QueryResponse / SSE<br/>answer · citations · latency<br/>stream: готовый answer делится на слова<br/>token → citations → done"]
+    MEMQ["InMemoryJobQueue<br/>when REDIS_URL is absent"]
+    REDISQ["RedisJobQueue<br/>when REDIS_URL is configured"]
+    APIOUT["QueryResponse / SSE<br/>answer · citations · latency<br/>stream: completed answer is split into words<br/>token → citations → done"]
     DI -->|"service=None"| MEMSVC --> APIOUT -->|"HTTP/SSE"| USER
     DI -->|"queue=None"| MEMQ
     DI -->|"REDIS_URL"| REDISQ
@@ -54,20 +36,20 @@ flowchart TB
     ROUTES -->|"POST /query"| MEMSVC
   end
 
-  subgraph ASYNC["Асинхронный ingestion-процесс — реализован и подключён"]
+  subgraph ASYNC["Asynchronous ingestion flow — implemented and wired"]
     direction LR
-    ENQUEUE["POST /ingestion/jobs<br/>idempotency key = supplied<br/>или ingest:source"]
-    JOBSTATE{"Job state machine<br/>pending → running → succeeded<br/>ошибка: pending retry → dead_letter<br/>cancelled — best effort"}
+    ENQUEUE["POST /ingestion/jobs<br/>idempotency key = supplied<br/>or ingest:source"]
+    JOBSTATE{"Job state machine<br/>pending → running → succeeded<br/>failure: pending retry → dead_letter<br/>cancelled — best effort"}
     REDIS[("Redis 7<br/>queue · job JSON<br/>idempotency keys · AOF")]
     WORKER["Worker process<br/>claim → handler → complete/fail<br/>max attempts = 3"]
-    INGEST["IngestionPipeline<br/>sync work вынесено через asyncio.to_thread"]
+    INGEST["IngestionPipeline<br/>synchronous work offloaded with asyncio.to_thread"]
     DISCOVER["Source discovery + validation<br/>allowed extension/root/size<br/>deterministic order"]
     LOAD["Loader router<br/>Docling · Unstructured · CSV/JSON<br/>Web · Directory · PyPDF fallback"]
-    HASH{"SHA-256 до/после load<br/>источник изменился?"}
+    HASH{"SHA-256 before/after loading<br/>did the source change?"}
     CHUNK["StructureAwareChunker<br/>Markdown sections + TextChunker<br/>bounded overlap windows"]
     IDS["Deterministic identity<br/>document_id · content_id · chunk_id<br/>content hash · version · schema version"]
     REG[("InMemoryDocumentRegistry<br/>latest immutable record per source<br/>idempotent within one worker process")]
-    GAP["Важный текущий разрыв<br/>worker заканчивает после load/chunk/register;<br/>IndexingService не вызывается"]
+    GAP["Important current integration gap<br/>worker stops after load/chunk/register;<br/>IndexingService is never called"]
 
     ROUTES --> ENQUEUE
     ENQUEUE -->|"enqueue"| MEMQ
@@ -78,18 +60,18 @@ flowchart TB
     JOBSTATE -->|"claim"| WORKER
     WORKER -->|"kind=ingest"| INGEST
     FILES --> DISCOVER --> HASH
-    HASH -->|"стабилен"| LOAD --> CHUNK --> IDS --> REG --> GAP
-    HASH -->|"изменился / ошибка"| JOBSTATE
+    HASH -->|"stable"| LOAD --> CHUNK --> IDS --> REG --> GAP
+    HASH -->|"changed / error"| JOBSTATE
     INGEST --> DISCOVER
     WORKER -->|"success / retry / dead letter"| JOBSTATE
   end
 
-  subgraph PROD["Production-компоненты в кодовой базе — требуют сборки custom RAGService и worker handler"]
+  subgraph PROD["Production components in the codebase — require a custom RAGService and worker handler composition"]
     direction TB
 
-    subgraph INDEX["Индексирование"]
+    subgraph INDEX["Indexing"]
       direction LR
-      IBRIDGE["Интеграционный мост<br/>передать chunks из IngestionPipeline<br/>в async IndexingService"]
+      IBRIDGE["Integration bridge<br/>pass chunks from IngestionPipeline<br/>to async IndexingService"]
       ISVC["IndexingService<br/>normalize fields → embed → VectorRecord → upsert"]
       CACHE["BatchedCachedEmbeddingProvider<br/>batching + cache key = model_id:content_hash"]
       DENSE["Dense embeddings"]
@@ -103,16 +85,16 @@ flowchart TB
     subgraph RET["HybridRetriever — query pipeline"]
       direction LR
       REQ["RetrievalRequest<br/>query · top_k · profile<br/>tenant_id · principals · filters<br/>token/character budget"]
-      PREFILTER{"Server-side filters<br/>tenant + ACL<br/>до ранжирования в обеих ветках"}
+      PREFILTER{"Server-side filters<br/>tenant + ACL<br/>before ranking in both branches"}
       DQ["Dense candidate search<br/>query embedding + cosine / ANN"]
       LQ["Lexical candidate search<br/>Qdrant sparse OR Postgres FTS<br/>fallback BM25 scan"]
-      RRF["Reciprocal Rank Fusion<br/>Σ 1/(60 + rank)<br/>не смешивает сырые score scales"]
+      RRF["Reciprocal Rank Fusion<br/>Σ 1/(60 + rank)<br/>does not mix raw score scales"]
       RERANK["Quality profile<br/>cross-encoder reranker<br/>BAAI/bge-reranker-base default"]
       EXPAND["Context expansion<br/>adjacent chunks / parent chunks"]
       DEDUPE["Deduplicate<br/>chunk ID + SHA-256(content)"]
       BUDGET["Context budget<br/>max tokens / characters<br/>then final top_k"]
       DIAG["RetrievalDiagnostics<br/>candidate counts · timings<br/>truncation · token estimate"]
-      GAPQ["Query integration gap<br/>HybridRetriever.retrieve — async method;<br/>RAGWorkflow ожидает callable / invoke без await"]
+      GAPQ["Query integration gap<br/>HybridRetriever.retrieve is asynchronous;<br/>RAGWorkflow expects callable / invoke without await"]
 
       REQ --> PREFILTER
       PREFILTER -->|"parallel"| DQ
@@ -162,12 +144,12 @@ flowchart TB
     end
   end
 
-  subgraph DATA["Взаимозаменяемые хранилища и профили deployment"]
+  subgraph DATA["Interchangeable stores and deployment profiles"]
     direction LR
-    MEMORY[("InMemoryVectorStore<br/>exact cosine + scan<br/>только tests/demos")]
+    MEMORY[("InMemoryVectorStore<br/>exact cosine + scan<br/>tests and demos only")]
     QDRANT[("Qdrant<br/>named dense + sparse vectors<br/>payload prefilter")]
     PGV[("PostgreSQL 16 + pgvector<br/>HNSW cosine index<br/>tsvector + GIN lexical index")]
-    PGREG[("PostgreSQL registry schema<br/>document_registry · ingestion_jobs<br/>migration exists; adapters не подключены")]
+    PGREG[("PostgreSQL registry schema<br/>document_registry · ingestion_jobs<br/>migration exists; adapters are not wired")]
     DENSE --> MEMORY
     DENSE --> QDRANT
     DENSE --> PGV
@@ -192,7 +174,7 @@ flowchart TB
     REQ --> QUAL
   end
 
-  subgraph EVALOPS["Качество, безопасность и эксплуатация"]
+  subgraph EVALOPS["Quality, security, and operations"]
     direction LR
     GOLD[("Golden dataset JSONL<br/>query · relevant IDs<br/>expected citations · reference answer")]
     EVAL["Evaluation runner<br/>Recall@k · Precision@k · MRR · nDCG<br/>citation precision/recall · latency p95"]
@@ -204,10 +186,10 @@ flowchart TB
     GOLD --> EVAL --> GATE
     BUDGET -.->|"predictions + latency"| EVAL
     FINAL -.->|"citations + status"| EVAL
-    EDGE -.-> OBS
-    ASYNC -.-> OBS
-    PROD -.-> OBS
-    DEPLOY -.-> EDGE
+    HTTP -.-> OBS
+    WORKER -.-> OBS
+    DIAG -.-> OBS
+    DEPLOY -.-> HTTP
     DEPLOY -.-> WORKER
     DEPLOY -.-> REDIS
     DEPLOY -.-> QDRANT
@@ -217,20 +199,20 @@ flowchart TB
     SEC -.-> ANSWER
   end
 
-  GAP -.->|"нужно реализовать wiring"| IBRIDGE
-  BUDGET -.->|"нужен async/callable adapter"| GAPQ
+  GAP -.->|"wiring must be implemented"| IBRIDGE
+  BUDGET -.->|"requires an async/callable adapter"| GAPQ
   GAPQ -.->|"evidence"| RETRIEVE
   FINAL -.->|"custom RAGService adapter"| DI
   PGV -.-> CHECKPOINT
   PGREG -.-> IBRIDGE
 
-  subgraph LEGEND["Легенда"]
+  subgraph LEGEND["Legend"]
     direction LR
-    L1["Сплошная стрелка<br/>подключённый runtime / data flow"]:::current
-    L2["Пунктирная стрелка<br/>optional, telemetry или ещё не собранное wiring"]:::optional
-    L3[("Хранилище / внешняя инфраструктура")]:::store
-    L4["Реализованный модуль,<br/>ожидающий production composition"]:::module
-    L5["Архитектурный gap / риск"]:::gap
+    L1["Solid arrow<br/>wired runtime / data flow"]:::current
+    L2["Dashed arrow<br/>optional, telemetry, or unwired integration"]:::optional
+    L3[("Data store / external infrastructure")]:::store
+    L4["Implemented module<br/>awaiting production composition"]:::module
+    L5["Architecture gap / risk"]:::gap
   end
 
   classDef actor fill:#f1f5f9,stroke:#64748b,color:#0f172a,stroke-width:1.5px;
@@ -240,7 +222,7 @@ flowchart TB
   classDef guard fill:#fee2e2,stroke:#dc2626,color:#450a0a,stroke-width:1.5px;
   classDef quality fill:#dcfce7,stroke:#16a34a,color:#052e16,stroke-width:1.5px;
   classDef gap fill:#fef3c7,stroke:#d97706,color:#451a03,stroke-width:3px;
-  classDef optional fill:#f8fafc,stroke:#94a3b8,color:#334155,stroke-width:1.5px,stroke-dasharray:5 4;
+  classDef optional fill:#f8fafc,stroke:#94a3b8,color:#334155,stroke-width:1.5px;
 
   class USER,ADMIN,FILES,MODELS,EMBEDS actor;
   class CLI,HTTP,ROUTES,DI,MEMSVC,MEMQ,REDISQ,APIOUT,ENQUEUE,JOBSTATE,WORKER,INGEST,DISCOVER,LOAD,HASH,CHUNK,IDS,REG current;
