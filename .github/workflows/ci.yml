@@ -1,0 +1,47 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python: ["3.12"]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: ${{ matrix.python }}
+          enable-cache: true
+      - name: Install project
+        run: uv sync --all-extras
+      - name: Compile source
+        run: uv run python -m compileall -q src scripts
+      - name: Lint
+        run: uv run ruff check src tests scripts examples
+      - name: Type check
+        run: uv run mypy src/rag_app
+      - name: Run tests
+        run: uv run pytest -q --cov=rag_app --cov-report=term-missing
+
+  container:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          tags: prod-rag:test
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

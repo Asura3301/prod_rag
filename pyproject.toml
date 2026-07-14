@@ -1,10 +1,20 @@
 [project]
 name = "prod-rag"
 version = "0.1.0"
-description = "Add your description here"
+description = "Production-oriented LangChain and LangGraph RAG template"
 readme = "README.md"
 requires-python = ">=3.12"
+license = { text = "Apache-2.0" }
+authors = [{ name = "prod-rag contributors" }]
+keywords = ["rag", "langchain", "langgraph", "qdrant", "pgvector"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3.12",
+]
 dependencies = [
+    "fastapi>=0.115",
+    "httpx>=0.28",
     "docling-core[chunking]>=2.83.1",
     "langchain>=1.3.4",
     "langchain-anthropic>=1.4.4",
@@ -14,7 +24,10 @@ dependencies = [
     "langchain-openai>=1.2.2",
     "langchain-unstructured[local]>=1.0.1",
     "langgraph>=1.2.4",
+    "pydantic-settings>=2.10",
     "python-dotenv>=1.2.2",
+    "redis>=6.0",
+    "uvicorn[standard]>=0.34",
     # Additional loaders dependencies
     "pypdf>=4.0.0",          # PyPDFLoader fallback
     "jq>=1.6.0",             # JSONLoader requires python jq
@@ -26,3 +39,82 @@ dependencies = [
     "python-docx>=1.1.0",    # auto-generate .docx fixtures in tests
     "python-magic-bin>=0.4.14; sys_platform == 'win32'",  # libmagic.dll for Windows (required by unstructured)
 ]
+
+[project.optional-dependencies]
+qdrant = [
+    "qdrant-client>=1.14",
+]
+pgvector = [
+    "pgvector>=0.4",
+    "psycopg[binary,pool]>=3.2",
+    "langgraph-checkpoint-postgres>=2.0",
+]
+local-models = [
+    "sentence-transformers>=3.4",
+]
+observability = [
+    "langsmith>=0.4",
+    "opentelemetry-api>=1.34",
+    "opentelemetry-sdk>=1.34",
+    "opentelemetry-exporter-otlp>=1.34",
+    "opentelemetry-instrumentation-fastapi>=0.55b0",
+    "prometheus-client>=0.22",
+]
+
+[dependency-groups]
+dev = [
+    "coverage[toml]>=7.8",
+    "mypy>=1.16",
+    "pre-commit>=4.2",
+    "pytest>=8.4",
+    "pytest-asyncio>=1.0",
+    "pytest-cov>=6.2",
+    "ruff>=0.12",
+]
+
+[project.scripts]
+rag = "rag_app.main:cli"
+
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/rag_app"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+addopts = "-m \"not slow and not integration and not legacy\""
+markers = [
+    "integration: requires an external service",
+    "slow: uses OCR or local ML models",
+    "legacy: requires LibreOffice or legacy document tooling",
+]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "SIM"]
+ignore = ["E501"]
+
+[tool.mypy]
+python_version = "3.12"
+packages = ["rag_app"]
+warn_unused_configs = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+no_implicit_optional = true
+check_untyped_defs = true
+disallow_untyped_defs = true
+ignore_missing_imports = true
+
+[tool.coverage.run]
+source = ["rag_app"]
+branch = true
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true

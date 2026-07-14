@@ -1,0 +1,3 @@
+{"id":"refund-policy","query":"How long do I have to request a refund?","relevant_document_ids":["policy-refunds"],"expected_citation_ids":["policy-refunds"],"reference_answer":"Refund requests are accepted within 30 days of purchase."}
+{"id":"support-hours","query":"When is customer support available?","relevant_document_ids":["support-hours"],"expected_citation_ids":["support-hours"],"reference_answer":"Customer support is available Monday through Friday, 09:00–17:00 UTC."}
+{"id":"data-retention","query":"How long are audit logs retained?","relevant_document_ids":["security-retention"],"expected_citation_ids":["security-retention"],"reference_answer":"Audit logs are retained for 90 days."}

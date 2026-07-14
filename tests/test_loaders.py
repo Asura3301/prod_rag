@@ -13,16 +13,14 @@ Run:
 """
 
 import json
-import os
 import sys
 import traceback
 from pathlib import Path
 
-# ── make the src package importable without installing the project ──────────
-PROJECT_ROOT = Path(__file__).parent.parent
-sys.path.insert(0, str(PROJECT_ROOT / "src"))
+import pytest
+from langchain_core.documents import Document
 
-from rag_app.ingestion.document_loaders import (  # noqa: E402
+from rag_app.ingestion.document_loaders import (
     CSVDocumentLoader,
     DirectoryDocumentLoader,
     DoclingDocumentLoader,
@@ -34,7 +32,8 @@ from rag_app.ingestion.document_loaders import (  # noqa: E402
     _tag,
     route_loader,
 )
-from langchain_core.documents import Document
+
+pytestmark = pytest.mark.slow
 
 # ── paths ───────────────────────────────────────────────────────────────────
 DATA_DIR = Path(__file__).parent / "data"
@@ -46,25 +45,25 @@ MANUAL.mkdir(parents=True, exist_ok=True)
 
 # ── colour output ───────────────────────────────────────────────────────────
 GREEN = "\033[92m"
-RED   = "\033[91m"
-CYAN  = "\033[96m"
+RED = "\033[91m"
+CYAN = "\033[96m"
 RESET = "\033[0m"
-BOLD  = "\033[1m"
+BOLD = "\033[1m"
 
 results: list[tuple[str, bool, str]] = []
 
 
 def _header(title: str) -> None:
-    print(f"\n{BOLD}{CYAN}{'─'*60}{RESET}")
+    print(f"\n{BOLD}{CYAN}{'─' * 60}{RESET}")
     print(f"{BOLD}{CYAN}  {title}{RESET}")
-    print(f"{BOLD}{CYAN}{'─'*60}{RESET}")
+    print(f"{BOLD}{CYAN}{'─' * 60}{RESET}")
 
 
 def _ok(name: str, docs: list[Document]) -> None:
     print(f"{GREEN}  PASS{RESET}  {name} — {len(docs)} doc(s)")
     for d in docs[:2]:
         preview = d.page_content[:120].replace("\n", " ")
-        loader  = d.metadata.get("loader", "?")
+        loader = d.metadata.get("loader", "?")
         print(f"         loader={loader!r}  {preview!r}")
     results.append((name, True, ""))
 
@@ -80,9 +79,9 @@ def _require(path: Path, name: str) -> bool:
     """Return True if the file exists; otherwise print a skip notice."""
     if path.exists():
         return True
-    print(f"  SKIP  {name} — place a real file at:\n"
-          f"         {path}\n"
-          f"         Then re-run the tests.")
+    print(
+        f"  SKIP  {name} — place a real file at:\n         {path}\n         Then re-run the tests."
+    )
     results.append((name, None, "missing fixture"))
     return False
 
@@ -90,6 +89,7 @@ def _require(path: Path, name: str) -> bool:
 # ════════════════════════════════════════════════════════════════════════════
 # Fixture generators — create minimal valid files for formats we can generate
 # ════════════════════════════════════════════════════════════════════════════
+
 
 def _make_txt() -> Path:
     p = GENERATED / "sample.txt"
@@ -205,6 +205,7 @@ def _make_docx() -> Path:
         return p
     try:
         from docx import Document as DocxDocument  # python-docx
+
         doc = DocxDocument()
         doc.add_heading("Test DOCX Document", 0)
         doc.add_paragraph("This DOCX was auto-generated for loader smoke tests.")
@@ -225,12 +226,13 @@ def _make_xlsx() -> Path:
         return p
     try:
         import openpyxl
+
         wb = openpyxl.Workbook()
         ws = wb.active
         ws.title = "Sheet1"
         ws.append(["id", "name", "description"])
         ws.append([1, "Alpha", "First row of spreadsheet data."])
-        ws.append([2, "Beta",  "Second row of spreadsheet data."])
+        ws.append([2, "Beta", "Second row of spreadsheet data."])
         ws.append([3, "Gamma", "Third row of spreadsheet data."])
         wb.save(str(p))
     except ImportError:
@@ -242,13 +244,14 @@ def _make_xlsx() -> Path:
 # Test functions — one per loader
 # ════════════════════════════════════════════════════════════════════════════
 
+
 def test_text_loader() -> None:
     _header("TextLoader  (.txt)")
     path = _make_txt()
     try:
         loader = TextLoader(str(path), encoding="utf-8")
-        docs   = loader.load()
-        docs   = _tag(docs, path, "text")
+        docs = loader.load()
+        docs = _tag(docs, path, "text")
         assert docs, "No documents returned"
         _ok("TextLoader", docs)
     except Exception as exc:
@@ -294,9 +297,13 @@ def test_docling_docx_generated() -> None:
     _header("DoclingDocumentLoader  (.docx — auto-generated)")
     path = _make_docx()
     if path is None:
-        print("  SKIP  DoclingDocumentLoader [docx generated]"
-              " — install python-docx to auto-generate, or place sample.docx in tests/data/manual/")
-        results.append(("DoclingDocumentLoader [docx generated]", None, "python-docx not installed"))
+        print(
+            "  SKIP  DoclingDocumentLoader [docx generated]"
+            " — install python-docx to auto-generate, or place sample.docx in tests/data/manual/"
+        )
+        results.append(
+            ("DoclingDocumentLoader [docx generated]", None, "python-docx not installed")
+        )
         return
     try:
         docs = DoclingDocumentLoader().load(path)
@@ -310,8 +317,10 @@ def test_docling_xlsx_generated() -> None:
     _header("DoclingDocumentLoader  (.xlsx — auto-generated)")
     path = _make_xlsx()
     if path is None:
-        print("  SKIP  DoclingDocumentLoader [xlsx generated]"
-              " — install openpyxl to auto-generate, or place sample.xlsx in tests/data/manual/")
+        print(
+            "  SKIP  DoclingDocumentLoader [xlsx generated]"
+            " — install openpyxl to auto-generate, or place sample.xlsx in tests/data/manual/"
+        )
         results.append(("DoclingDocumentLoader [xlsx generated]", None, "openpyxl not installed"))
         return
     try:
@@ -323,6 +332,7 @@ def test_docling_xlsx_generated() -> None:
 
 
 # ── Manual fixtures ──────────────────────────────────────────────────────────
+
 
 def test_docling_pdf() -> None:
     _header("DoclingDocumentLoader  (.pdf) + FallbackPDFLoader")
@@ -394,9 +404,13 @@ def test_unstructured_doc() -> None:
         _ok("UnstructuredDocumentLoader [doc]", docs)
     except FileNotFoundError as exc:
         if "soffice" in str(exc):
-            print(f"  SKIP  UnstructuredDocumentLoader [doc] — LibreOffice not installed.\n"
-                  f"         Install from https://www.libreoffice.org/ and ensure 'soffice' is in PATH.")
-            results.append(("UnstructuredDocumentLoader [doc]", None, "LibreOffice (soffice) not installed"))
+            print(
+                "  SKIP  UnstructuredDocumentLoader [doc] — LibreOffice not installed.\n"
+                "         Install from https://www.libreoffice.org/ and ensure 'soffice' is in PATH."
+            )
+            results.append(
+                ("UnstructuredDocumentLoader [doc]", None, "LibreOffice (soffice) not installed")
+            )
         else:
             _fail("UnstructuredDocumentLoader [doc]", exc)
     except Exception as exc:
@@ -444,6 +458,7 @@ def test_unstructured_eml() -> None:
 
 # ── CSV & JSON ───────────────────────────────────────────────────────────────
 
+
 def test_csv_loader() -> None:
     _header("CSVDocumentLoader  (.csv)")
     path = _make_csv()
@@ -468,6 +483,7 @@ def test_json_loader() -> None:
 
 # ── Web ──────────────────────────────────────────────────────────────────────
 
+
 def test_web_loader() -> None:
     _header("WebDocumentLoader  (live URL)")
     url = "https://example.com"
@@ -480,6 +496,7 @@ def test_web_loader() -> None:
 
 
 # ── Directory ────────────────────────────────────────────────────────────────
+
 
 def test_directory_loader() -> None:
     _header("DirectoryDocumentLoader  (generated/ folder, txt+csv+json)")
@@ -496,6 +513,7 @@ def test_directory_loader() -> None:
 
 
 # ── route_loader integration ─────────────────────────────────────────────────
+
 
 def test_route_loader_txt() -> None:
     _header("route_loader  — auto-dispatch .txt")
@@ -571,16 +589,18 @@ def main() -> None:
         fn()
 
     # ── Summary ──────────────────────────────────────────────────────────────
-    passed  = [r for r in results if r[1] is True]
-    failed  = [r for r in results if r[1] is False]
+    passed = [r for r in results if r[1] is True]
+    failed = [r for r in results if r[1] is False]
     skipped = [r for r in results if r[1] is None]
 
-    print(f"\n{BOLD}{'═'*60}")
-    print(f"  SUMMARY:  "
-          f"{GREEN}{len(passed)} passed{RESET}  "
-          f"{RED}{len(failed)} failed{RESET}  "
-          f"{len(skipped)} skipped")
-    print(f"{'═'*60}{RESET}")
+    print(f"\n{BOLD}{'═' * 60}")
+    print(
+        f"  SUMMARY:  "
+        f"{GREEN}{len(passed)} passed{RESET}  "
+        f"{RED}{len(failed)} failed{RESET}  "
+        f"{len(skipped)} skipped"
+    )
+    print(f"{'═' * 60}{RESET}")
 
     if failed:
         print(f"\n{RED}Failed tests:{RESET}")
@@ -588,7 +608,7 @@ def main() -> None:
             print(f"  • {name}: {msg}")
 
     if skipped:
-        print(f"\nSkipped (missing manual fixture):")
+        print("\nSkipped (missing manual fixture):")
         for name, _, msg in skipped:
             print(f"  • {name}: {msg}")
 

@@ -1,191 +1,282 @@
+"""Validated, dependency-tolerant document loading.
+
+Heavy parsers are imported only when selected.  This keeps the ingestion
+package importable in workers that only handle plain text.
+"""
+
+from __future__ import annotations
+
+import logging
+import mimetypes
 import os
-import tempfile
+from collections.abc import Iterable
+from ipaddress import ip_address
 from pathlib import Path
-from typing import Iterable
+from urllib.parse import urlparse
 
+from langchain_community.document_loaders import TextLoader
 from langchain_core.documents import Document
-from langchain_docling import DoclingLoader
-from langchain_docling.loader import ExportType
-from langchain_unstructured import UnstructuredLoader
-from docling.chunking import HybridChunker
 
-from langchain_community.document_loaders import (
-    CSVLoader,
-    JSONLoader,
-    WebBaseLoader,
-    DirectoryLoader,
-    TextLoader,
-    PyPDFLoader,
-)
+logger = logging.getLogger(__name__)
 
-from dotenv import load_dotenv
-
-load_dotenv()
-
-#----------------------------------------------------------
-# Configuration
-FILE_PATH = os.getenv("FILE_PATH")
-EXPORT_TYPE = ExportType.DOC_CHUNKS
-EMBED_MODEL_ID = os.getenv("EMBED_MODEL_ID")
-
-#----------------------------------------------------------
-# Routing tables — which loader handles which file extension.
-# Docling is preferred for rich-layout documents (PDF, modern Office, HTML, MD, notebooks).
-# Unstructured is the fallback for legacy/binary formats Docling cannot parse.
 DOCLING_EXTS = {".pdf", ".docx", ".pptx", ".xlsx", ".html", ".xhtml", ".md"}
 UNSTRUCTURED_EXTS = {
-    ".doc", ".ppt", ".xls", ".rtf", ".epub", ".eml", ".msg",
-    ".odt", ".odp", ".ods", ".rst", ".org",
+    ".doc",
+    ".ppt",
+    ".xls",
+    ".rtf",
+    ".epub",
+    ".eml",
+    ".msg",
+    ".odt",
+    ".odp",
+    ".ods",
+    ".rst",
+    ".org",
 }
+TEXT_EXTS = {
+    ".txt",
+    ".log",
+    ".py",
+    ".js",
+    ".ts",
+    ".sh",
+    ".yaml",
+    ".yml",
+    ".ini",
+    ".cfg",
+    ".ipynb",
+}
+STRUCTURED_EXTS = {".csv", ".json"}
+ALLOWED_EXTENSIONS = DOCLING_EXTS | UNSTRUCTURED_EXTS | TEXT_EXTS | STRUCTURED_EXTS
+DEFAULT_MAX_FILE_SIZE = 100 * 1024 * 1024
+METADATA_VERSION = 1
 
-#----------------------------------------------------------
-# Metadata helper
-def _tag(docs: Iterable[Document], path: Path, loader_name: str) -> list[Document]:
-    tagged: list[Document] = []
-    for doc in docs:
-        doc.metadata.update(
-            {
-                "source": str(path),
-                "filename": path.name,
-                "suffix": path.suffix.lower(),
-                "loader": loader_name,
-            }
+
+class DocumentValidationError(ValueError):
+    """Raised when an ingestion target violates the configured safety policy."""
+
+
+class OptionalLoaderUnavailable(RuntimeError):
+    """Raised when an optional parser required for a file is unavailable."""
+
+
+def validate_file_path(
+    file_path: str | os.PathLike[str],
+    *,
+    allowed_root: str | os.PathLike[str] | None = None,
+    allowed_extensions: set[str] | frozenset[str] = ALLOWED_EXTENSIONS,
+    max_file_size: int = DEFAULT_MAX_FILE_SIZE,
+    check_mime: bool = True,
+) -> Path:
+    """Resolve and validate a regular local file without opening it."""
+    raw = os.fspath(file_path)
+    if not raw or "\x00" in raw:
+        raise DocumentValidationError("File path is empty or contains a NUL byte")
+    parsed = urlparse(raw)
+    if parsed.scheme and len(parsed.scheme) > 1:
+        raise DocumentValidationError(
+            f"Local loaders do not accept the {parsed.scheme!r} URL scheme"
         )
-        tagged.append(doc)
+    path = Path(raw).expanduser().resolve(strict=True)
+    if not path.is_file():
+        raise DocumentValidationError(f"Not a regular file: {path}")
+    if allowed_root is not None:
+        root = Path(allowed_root).expanduser().resolve(strict=True)
+        try:
+            path.relative_to(root)
+        except ValueError as exc:
+            raise DocumentValidationError(f"File is outside allowed root: {path}") from exc
+    extension = path.suffix.lower()
+    if extension not in allowed_extensions:
+        raise DocumentValidationError(f"Unsupported file extension: {extension or '<none>'}")
+    size = path.stat().st_size
+    if size > max_file_size:
+        raise DocumentValidationError(f"File exceeds {max_file_size} byte limit: {size} bytes")
+    if check_mime:
+        guessed, _ = mimetypes.guess_type(path.name)
+        if guessed is not None and not _mime_matches_extension(guessed, extension):
+            raise DocumentValidationError(
+                f"MIME type {guessed!r} is inconsistent with extension {extension!r}"
+            )
+    return path
+
+
+def validate_web_url(url: str) -> str:
+    """Allow public HTTP(S) URLs and reject obvious SSRF targets."""
+    parsed = urlparse(url)
+    if parsed.scheme.lower() not in {"http", "https"} or not parsed.netloc:
+        raise DocumentValidationError("Only absolute http(s) URLs are supported")
+    if parsed.username or parsed.password:
+        raise DocumentValidationError("URLs containing credentials are not accepted")
+    hostname = (parsed.hostname or "").rstrip(".").casefold()
+    if hostname == "localhost" or hostname.endswith(".localhost"):
+        raise DocumentValidationError("Localhost URLs are not accepted")
+    try:
+        address = ip_address(hostname)
+    except ValueError:
+        pass
+    else:
+        if not address.is_global:
+            raise DocumentValidationError(
+                "Private, loopback, and reserved IP URLs are not accepted"
+            )
+    return url
+
+
+def _mime_matches_extension(mime: str, extension: str) -> bool:
+    if extension in TEXT_EXTS | {".csv", ".json", ".md", ".rst", ".org"}:
+        return mime.startswith("text/") or mime in {
+            "application/json",
+            "application/x-ipynb+json",
+            "application/octet-stream",
+        }
+    expected = {
+        ".pdf": {"application/pdf"},
+        ".docx": {"application/vnd.openxmlformats-officedocument.wordprocessingml.document"},
+        ".pptx": {"application/vnd.openxmlformats-officedocument.presentationml.presentation"},
+        ".xlsx": {"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"},
+    }
+    return extension not in expected or mime in expected[extension]
+
+
+def _normalize_source(path: Path) -> str:
+    return path.as_posix()
+
+
+def _tag(docs: Iterable[Document], path: Path, loader_name: str) -> list[Document]:
+    """Return documents with stable normalized source metadata."""
+    resolved = path.expanduser().resolve()
+    base = {
+        "source": _normalize_source(resolved),
+        "source_type": "file",
+        "filename": resolved.name,
+        "extension": resolved.suffix.lower(),
+        "suffix": resolved.suffix.lower(),  # retained for compatibility
+        "loader": loader_name,
+        "metadata_version": METADATA_VERSION,
+    }
+    tagged: list[Document] = []
+    for document in docs:
+        metadata = dict(document.metadata or {})
+        metadata.update(base)
+        tagged.append(Document(page_content=document.page_content, metadata=metadata))
     return tagged
 
 
-#----------------------------------------------------------
-# Test Text Loader
-def load_text_file():
-    # Create temporary text file for demonstration
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".txt") as temp_file:
-        temp_file.write(b"This is a test file.\nThis file is used to test the text loader.")
-        temp_file_path = temp_file.name
-
-    try:
-        # Load the text file using TextLoader
-        loader = TextLoader(temp_file_path)
-        documents = loader.load()
-
-        print(f"Loaded {len(documents)} document(s)")
-        print(f"Content preview: {documents[0].page_content[:100]}...")
-        print(f"Metadata: {documents[0].metadata}")
-
-    finally:
-        # Delete the temporary file
-        os.remove(temp_file_path)
+def _validated(file_path: str | Path) -> Path:
+    return validate_file_path(file_path)
 
 
-#----------------------------------------------------------
-# Docling DocumentLoader — rich-layout documents (PDF, DOCX, PPTX, XLSX, HTML, MD, IPYNB)
 class DoclingDocumentLoader:
+    def __init__(self, embed_model_id: str | None = None) -> None:
+        self.embed_model_id = embed_model_id
+
     def load(self, file_path: str | Path) -> list[Document]:
-        path = Path(file_path)
-
-        loader = DoclingLoader(
-            file_path=str(path),
-            export_type=EXPORT_TYPE,
-            chunker=HybridChunker(tokenizer=EMBED_MODEL_ID),
+        path = _validated(file_path)
+        try:
+            from docling.chunking import HybridChunker
+            from langchain_docling import DoclingLoader
+            from langchain_docling.loader import ExportType
+        except ImportError as exc:
+            raise OptionalLoaderUnavailable(
+                "Docling support is unavailable; install langchain-docling and docling-core"
+            ) from exc
+        model_id = self.embed_model_id or os.getenv("EMBED_MODEL_ID")
+        chunker = (
+            HybridChunker(tokenizer=model_id)  # type: ignore[arg-type]
+            if model_id
+            else HybridChunker()
         )
-        docs = loader.load()
-        docs = _tag(docs, path, "docling")
+        try:
+            docs = DoclingLoader(
+                file_path=str(path),
+                export_type=ExportType.DOC_CHUNKS,
+                chunker=chunker,
+            ).load()
+        except Exception as exc:
+            raise RuntimeError(f"Docling could not parse {path.name}: {exc}") from exc
+        tagged = _tag(docs, path, "docling")
+        logger.info("Loaded %d document(s) with Docling from %s", len(tagged), path)
+        return tagged
 
-        print(f"[docling] Loaded {len(docs)} document(s) from {path.name}")
-        for doc in docs[:3]:
-            print(f"  {doc.page_content[:100]!r}")
-        return docs
 
-
-#----------------------------------------------------------
-# Unstructured Document Loader — legacy/binary & email/ebook formats
 class UnstructuredDocumentLoader:
     def load(self, file_path: str | Path) -> list[Document]:
-        path = Path(file_path)
+        path = _validated(file_path)
+        try:
+            from langchain_unstructured import UnstructuredLoader
+        except ImportError as exc:
+            raise OptionalLoaderUnavailable(
+                "Unstructured support is unavailable; install langchain-unstructured[local]"
+            ) from exc
+        try:
+            docs = UnstructuredLoader(file_path=str(path)).load()
+        except Exception as exc:
+            raise RuntimeError(f"Unstructured could not parse {path.name}: {exc}") from exc
+        tagged = _tag(docs, path, "unstructured")
+        logger.info("Loaded %d document(s) with Unstructured from %s", len(tagged), path)
+        return tagged
 
-        loader = UnstructuredLoader(file_path=str(path))
-        docs = loader.load()
-        docs = _tag(docs, path, "unstructured")
 
-        print(f"[unstructured] Loaded {len(docs)} document(s) from {path.name}")
-        for doc in docs[:3]:
-            print(f"  {doc.page_content[:100]!r}")
-        return docs
-
-
-#----------------------------------------------------------
-# CSV Loader — one document per row, preserving row context.
-# source_column is optional; set it to a column name to use its value as source.
 class CSVDocumentLoader:
     def __init__(self, source_column: str | None = None, encoding: str | None = None):
         self.source_column = source_column
         self.encoding = encoding
 
     def load(self, file_path: str | Path) -> list[Document]:
-        path = Path(file_path)
+        path = _validated(file_path)
+        from langchain_community.document_loaders import CSVLoader
 
-        loader = CSVLoader(
+        docs = CSVLoader(
             file_path=str(path),
             source_column=self.source_column,
             encoding=self.encoding,
-        )
-        docs = loader.load()
-        docs = _tag(docs, path, "csv")
-
-        print(f"[csv] Loaded {len(docs)} row(s) from {path.name}")
-        for doc in docs[:3]:
-            print(f"  row={doc.metadata.get('row')} {doc.page_content[:100]!r}")
-        return docs
+        ).load()
+        return _tag(docs, path, "csv")
 
 
-#----------------------------------------------------------
-# JSON Loader — extracts nested content via a jq schema.
-# Default jq_schema ".[].content" assumes a list of objects with a "content" key.
-# Override for your actual JSON shape, e.g. '.messages[].text'.
 class JSONDocumentLoader:
     def __init__(self, jq_schema: str = ".[].content", text_content: bool = False):
         self.jq_schema = jq_schema
         self.text_content = text_content
 
     def load(self, file_path: str | Path) -> list[Document]:
-        path = Path(file_path)
+        path = _validated(file_path)
+        from langchain_community.document_loaders import JSONLoader
 
-        loader = JSONLoader(
+        docs = JSONLoader(
             file_path=str(path),
             jq_schema=self.jq_schema,
             text_content=self.text_content,
-        )
-        docs = loader.load()
-        docs = _tag(docs, path, "json")
-
-        print(f"[json] Loaded {len(docs)} item(s) from {path.name}")
-        for doc in docs[:3]:
-            print(f"  {doc.page_content[:100]!r}")
-        return docs
+        ).load()
+        return _tag(docs, path, "json")
 
 
-#----------------------------------------------------------
-# Web Loader — fetches and parses a live URL (or list of URLs).
 class WebDocumentLoader:
     def load(self, urls: str | Iterable[str]) -> list[Document]:
         url_list = [urls] if isinstance(urls, str) else list(urls)
+        if not url_list:
+            return []
+        safe_urls = [validate_web_url(url) for url in url_list]
+        from langchain_community.document_loaders import WebBaseLoader
 
-        loader = WebBaseLoader(url_list)
-        docs = loader.load()
-
-        # WebBaseLoader already sets "source" = url; we enrich with loader tag.
+        docs = WebBaseLoader(safe_urls).load()
+        normalized: list[Document] = []
         for doc in docs:
-            doc.metadata.update({"loader": "web"})
+            metadata = dict(doc.metadata or {})
+            metadata.update(
+                {
+                    "source": str(metadata.get("source", "")),
+                    "source_type": "web",
+                    "loader": "web",
+                    "metadata_version": METADATA_VERSION,
+                }
+            )
+            normalized.append(Document(page_content=doc.page_content, metadata=metadata))
+        return normalized
 
-        print(f"[web] Loaded {len(docs)} page(s) from {len(url_list)} URL(s)")
-        for doc in docs[:3]:
-            print(f"  {doc.metadata.get('source')} -> {doc.page_content[:80]!r}")
-        return docs
 
-
-#----------------------------------------------------------
-# Directory Loader — batch-loads a folder using a loader-per-extension.
-# Uses a glob pattern (e.g. "**/*.pdf") and a loader class factory.
 class DirectoryDocumentLoader:
     def __init__(self, glob: str = "**/*.*", show_progress: bool = True, recursive: bool = True):
         self.glob = glob
@@ -193,87 +284,85 @@ class DirectoryDocumentLoader:
         self.recursive = recursive
 
     def load(self, dir_path: str | Path) -> list[Document]:
-        path = Path(dir_path)
-
-        # Simple strategy: route each file through the dispatcher below.
+        path = Path(dir_path).expanduser().resolve(strict=True)
+        if not path.is_dir():
+            raise DocumentValidationError(f"Not a directory: {path}")
         docs: list[Document] = []
-        for file in path.rglob("*") if self.recursive else path.glob("*"):
-            if not file.is_file():
-                continue
-            if not self.glob_matches(file):
+        iterator = path.rglob("*") if self.recursive else path.glob("*")
+        for file_path in sorted(iterator, key=lambda item: item.as_posix()):
+            if not file_path.is_file() or not self.glob_matches(file_path):
                 continue
             try:
-                docs.extend(route_loader(file))
-            except Exception as exc:  # noqa: BLE001 — skip unreadable files in batch mode
-                print(f"[directory] skipped {file.name}: {exc}")
-
-        print(f"[directory] Loaded {len(docs)} document(s) from {path}")
+                docs.extend(route_loader(file_path, allowed_root=path))
+            except Exception as exc:
+                logger.warning("Skipping %s: %s", file_path, exc)
         return docs
 
     def glob_matches(self, file_path: Path) -> bool:
-        # Minimal glob support: only the suffix part of self.glob is checked.
-        pattern = self.glob.split("*")[-1]
-        return file_path.name.endswith(pattern) if pattern else True
+        return file_path.match(self.glob) or file_path.name == self.glob
 
 
-#----------------------------------------------------------
-# Fallback PDF Loader — used when Docling fails on a tricky PDF
 class FallbackPDFLoader:
     def load(self, file_path: str | Path) -> list[Document]:
-        path = Path(file_path)
+        path = _validated(file_path)
+        from langchain_community.document_loaders import PyPDFLoader
 
-        loader = PyPDFLoader(str(path))
-        docs = loader.load()
-        docs = _tag(docs, path, "pypdf")
-
-        print(f"[pypdf] Loaded {len(docs)} page(s) from {path.name}")
-        for doc in docs[:3]:
-            print(f"  page={doc.metadata.get('page')} {doc.page_content[:100]!r}")
-        return docs
+        docs = PyPDFLoader(str(path)).load()
+        return _tag(docs, path, "pypdf")
 
 
-#----------------------------------------------------------
-# Dispatcher — pick the right loader by file extension.
-# Order of preference: specialized (CSV/JSON) > Docling > Unstructured > Text fallback.
-def route_loader(file_path: str | Path) -> list[Document]:
-    path = Path(file_path)
-    if not path.exists():
-        raise FileNotFoundError(path)
+def load_text_file(file_path: str | Path | None = None) -> list[Document]:
+    """Load a text file; the argument is required (legacy helper retained)."""
+    if file_path is None:
+        raise TypeError("load_text_file() requires a file_path")
+    path = _validated(file_path)
+    return _tag(TextLoader(str(path), encoding="utf-8").load(), path, "text")
 
-    ext = path.suffix.lower()
 
-    if ext == ".csv":
+def route_loader(
+    file_path: str | Path,
+    *,
+    allowed_root: str | Path | None = None,
+    max_file_size: int = DEFAULT_MAX_FILE_SIZE,
+) -> list[Document]:
+    """Validate a local file and dispatch it to the appropriate loader."""
+    path = validate_file_path(file_path, allowed_root=allowed_root, max_file_size=max_file_size)
+    extension = path.suffix.lower()
+    if extension == ".csv":
         return CSVDocumentLoader().load(path)
-    if ext == ".json":
+    if extension == ".json":
         return JSONDocumentLoader().load(path)
-
-    if ext in DOCLING_EXTS:
+    if extension in DOCLING_EXTS:
         try:
             return DoclingDocumentLoader().load(path)
-        except Exception as exc:  # noqa: BLE001 — fall back for PDFs Docling chokes on
-            if ext == ".pdf":
-                print(f"[route] Docling failed on {path.name} ({exc}); using PyPDFLoader")
+        except Exception as exc:
+            if extension == ".pdf":
+                logger.warning("Docling failed for %s; trying PyPDF: %s", path, exc)
                 return FallbackPDFLoader().load(path)
             raise
-
-    if ext in UNSTRUCTURED_EXTS:
-        return UnstructuredDocumentLoader().load(path) 
-
-    # Plain text and anything else -> TextLoader, then Unstructured as last resort.
-    if ext in {".txt", ".log", ".py", ".js", ".ts", ".sh", ".yaml", ".yml", ".ini", ".cfg", ".ipynb"}:
-        docs = TextLoader(str(path), encoding="utf-8").load()
-        docs = _tag(docs, path, "text")
-        return docs
-
-    return UnstructuredDocumentLoader().load(path)
+    if extension in UNSTRUCTURED_EXTS:
+        return UnstructuredDocumentLoader().load(path)
+    if extension in TEXT_EXTS:
+        return _tag(TextLoader(str(path), encoding="utf-8").load(), path, "text")
+    raise DocumentValidationError(f"No loader configured for extension {extension!r}")
 
 
-#----------------------------------------------------------
-if __name__ == "__main__":
-    docs = route_loader(FILE_PATH)
-    print(docs)
-    for doc in docs:
-        print(doc.page_content)
-        print(doc.metadata)
-        print("-"*100)
-
+__all__ = [
+    "ALLOWED_EXTENSIONS",
+    "CSVDocumentLoader",
+    "DEFAULT_MAX_FILE_SIZE",
+    "DirectoryDocumentLoader",
+    "DoclingDocumentLoader",
+    "DocumentValidationError",
+    "FallbackPDFLoader",
+    "JSONDocumentLoader",
+    "OptionalLoaderUnavailable",
+    "TextLoader",
+    "UnstructuredDocumentLoader",
+    "WebDocumentLoader",
+    "_tag",
+    "load_text_file",
+    "route_loader",
+    "validate_file_path",
+    "validate_web_url",
+]
