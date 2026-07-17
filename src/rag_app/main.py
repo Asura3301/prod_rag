@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from collections.abc import Sequence
 from pathlib import Path
 
@@ -54,9 +55,12 @@ def _ingest(args: argparse.Namespace) -> int:
 def _query(args: argparse.Namespace) -> int:
     import httpx
 
+    api_token = args.api_token or os.getenv("RAG_API_TOKEN")
+    headers = {"Authorization": f"Bearer {api_token}"} if api_token else None
     response = httpx.post(
         f"{args.api_url.rstrip('/')}/api/v1/query",
         json={"query": args.query, "top_k": args.top_k, "filters": {}},
+        headers=headers,
         timeout=args.timeout,
     )
     response.raise_for_status()
@@ -102,6 +106,7 @@ def build_parser() -> argparse.ArgumentParser:
     query = subcommands.add_parser("query", help="Query a running API")
     query.add_argument("query")
     query.add_argument("--api-url", default="http://localhost:8000")
+    query.add_argument("--api-token", help="Bearer token; defaults to RAG_API_TOKEN")
     query.add_argument("--top-k", type=int, default=5)
     query.add_argument("--timeout", type=float, default=60.0)
     query.set_defaults(handler=_query)

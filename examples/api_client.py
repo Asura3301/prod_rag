@@ -7,13 +7,17 @@ import os
 from urllib.request import Request, urlopen
 
 BASE_URL = os.getenv("RAG_API_URL", "http://localhost:8000")
+API_TOKEN = os.getenv("RAG_API_TOKEN")
 
 
 def post(path: str, payload: dict[str, object]) -> dict[str, object]:
+    headers = {"Content-Type": "application/json"}
+    if API_TOKEN:
+        headers["Authorization"] = f"Bearer {API_TOKEN}"
     request = Request(
         f"{BASE_URL}{path}",
         data=json.dumps(payload).encode(),
-        headers={"Content-Type": "application/json"},
+        headers=headers,
         method="POST",
     )
     with urlopen(request, timeout=30) as response:
@@ -21,10 +25,14 @@ def post(path: str, payload: dict[str, object]) -> dict[str, object]:
 
 
 if __name__ == "__main__":
-    job = post(
-        "/api/v1/ingestion/jobs",
-        {"source": "file:///data/handbook.pdf", "idempotency_key": "handbook-v1"},
+    document = post(
+        "/api/v1/documents",
+        {
+            "source": "memory://handbook",
+            "text": "Refunds are available within thirty days.",
+            "metadata": {"category": "policy"},
+        },
     )
-    print("job:", json.dumps(job, indent=2))
-    answer = post("/api/v1/query", {"query": "Summarize the handbook", "top_k": 5})
+    print("document:", json.dumps(document, indent=2))
+    answer = post("/api/v1/query", {"query": "What is the refund policy?", "top_k": 5})
     print("answer:", json.dumps(answer, indent=2))

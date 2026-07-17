@@ -9,9 +9,10 @@ in-memory implementations and require no infrastructure.
 
 Python 3.12 is required.
 
-```bash
+```powershell
 uv sync
-copy .env.example .env  # Windows; use: cp .env.example .env
+$env:RAG_API_TOKEN = "local-api-token"
+$env:RAG_ADMIN_TOKEN = "local-admin-token"
 uv run rag serve --reload
 ```
 
@@ -20,17 +21,34 @@ Open `http://localhost:8000/docs`, or verify the service:
 ```bash
 curl http://localhost:8000/health/ready
 curl -X POST http://localhost:8000/api/v1/documents \
-  -H "Authorization: Bearer change-me" \
+  -H "Authorization: Bearer local-api-token" \
   -H "Content-Type: application/json" \
   -d '{"source":"memory://handbook","text":"Refunds are available within thirty days."}'
 curl -X POST http://localhost:8000/api/v1/query \
-  -H "Authorization: Bearer change-me" \
+  -H "Authorization: Bearer local-api-token" \
   -H "Content-Type: application/json" \
   -d '{"query":"What is the refund policy?","top_k":5}'
 ```
 
 The default service is intentionally ephemeral. Inject production retrieval and queue adapters
 through `create_app(service=..., queue=...)`.
+
+## Documentation
+
+Start here:
+
+- [Getting started](docs/getting-started.md): Windows-first installation, first API query,
+  ingestion, Docker profiles, and verification.
+- [Configuration reference](docs/configuration.md): every environment variable, provider recipe,
+  Compose setting, and current runtime-wiring status.
+- [Usage guide](docs/usage.md): CLI, all HTTP routes, loaders, worker, Qdrant, pgvector, hybrid
+  retrieval, evaluation, telemetry, and runnable examples.
+- [Troubleshooting](docs/troubleshooting.md): startup, authentication, Docker, Redis, vector-store,
+  loader, telemetry, and test failures.
+
+The default API is a functional in-memory demo. Optional production adapters are implemented but
+must be explicitly composed into a persistent `RAGService`; enabling a database Compose profile
+alone does not change the API backend.
 
 ## Architecture and profiles
 
@@ -78,8 +96,8 @@ no token is configured and require `Authorization: Bearer <token>` otherwise.
 - protected `GET /metrics`; protected `GET /debug/state`
 
 See [architecture](docs/architecture.md), [deployment](docs/deployment.md),
-[security](docs/security.md), and [evaluation](docs/evaluation.md). A standard-library client is
-available at `examples/api_client.py`.
+[security](docs/security.md), [evaluation](docs/evaluation.md), and the
+[complete usage guide](docs/usage.md). Runnable examples are available under `examples/`.
 
 ## Evaluation and tests
 
