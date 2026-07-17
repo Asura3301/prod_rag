@@ -1,102 +1,58 @@
 # Getting Started
 
-This guide takes you from a clean Windows machine to a verified local RAG demo. Run commands
-from the repository root (`*\prod_RAG`) in PowerShell unless a section says otherwise.
+This guide starts the functional local runtime on Windows. Run commands from the repository root
+in PowerShell.
 
-## 1. Understand the two operating modes
-
-The repository currently has two distinct usage levels:
-
-1. **Runnable demo:** FastAPI, direct text documents, in-memory search, health checks, API
-   authentication, Redis jobs, loader/chunking CLI, and deterministic local retrieval examples.
-2. **Production building blocks:** Qdrant, pgvector, provider embeddings, hybrid retrieval,
-   reranking, LangGraph, PostgreSQL checkpoints, and OpenTelemetry. These components work through
-   their Python interfaces and tests, but are not yet automatically composed into the default API.
-
-Starting a Qdrant or pgvector Compose profile starts that database; it does not change the default
-API from `InMemoryRAGService`. See [configuration](configuration.md#runtime-wiring-status).
-
-## 2. Prerequisites
+## 1. Prerequisites
 
 Install:
 
 - Git.
 - Python 3.12 or newer.
-- `uv`, the Python project and environment manager.
-- Docker Desktop only if you want Redis, Qdrant, pgvector, or containerized startup.
-- Optional: LibreOffice for legacy `.doc` ingestion.
+- [uv](https://docs.astral.sh/uv/getting-started/installation/).
+- Docker Desktop using Linux containers.
+- [LM Studio](https://lmstudio.ai/).
 
-Verify:
+Verify the command-line tools:
 
 ```powershell
 git --version
 python --version
+uv --version
 docker --version
 docker compose version
 ```
 
-The Python result must be `3.12` or newer. Docker commands are optional for the first local demo.
-
-### Install uv on Windows
-
-The official standalone installer is:
-
-```powershell
-powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
-```
-
-Close and reopen PowerShell, then verify:
-
-```powershell
-uv --version
-```
-
-`uv` can install a suitable Python interpreter if necessary:
+If needed, install Python through uv:
 
 ```powershell
 uv python install 3.12
 ```
 
-## 3. Install the project
+## 2. Install the required Python extras
 
-Open the repository:
-
-```powershell
-Set-Location *your-path*\prod_RAG
-```
-
-Install the locked base and development dependencies:
+The local runtime needs the Qdrant client and Sentence Transformers:
 
 ```powershell
-uv sync
+uv sync --extra qdrant --extra local-models
 ```
 
-Optional features are not installed by default. Install only what you need:
+The first use of `BAAI/bge-m3` may download a large model and initialize it. Startup can therefore
+take noticeably longer the first time. Keep network access, cache permissions, and sufficient disk
+space available.
 
-```powershell
-# Qdrant client
-uv sync --extra qdrant
+## 3. Configure LM Studio
 
-# PostgreSQL/pgvector client and LangGraph PostgreSQL checkpoint support
-uv sync --extra pgvector
+In LM Studio:
 
-# Local Hugging Face embeddings and cross-encoder reranking
-uv sync --extra local-models
+1. Install and load the model whose served identifier is `gpt-oss-20b`.
+2. Start the OpenAI-compatible local server.
+3. Confirm it listens on `127.0.0.1:1234`.
 
-# OpenTelemetry, LangSmith, and Prometheus client libraries
-uv sync --extra observability
+The application uses the base URL `http://127.0.0.1:1234/v1`. The diagnostics command checks
+`GET /v1/models` and verifies that `gpt-oss-20b` is advertised.
 
-# Everything
-uv sync --all-extras
-```
-
-Confirm the CLI:
-
-```powershell
-uv run rag --help
-```
-
-## 4. Create local configuration
+## 4. Create `.env`
 
 Copy the template:
 
@@ -104,231 +60,183 @@ Copy the template:
 Copy-Item .env.example .env
 ```
 
-For the first demo, the model and vector-store settings can remain unchanged because the default
-API does not call a hosted LLM or embedding provider.
+Use this canonical local schema. Nested models use double underscores (`__`):
 
-Important: `Settings()` loads `.env`, but the current default API factory directly reads selected
-process environment variables. Set tokens in the current PowerShell session before starting it:
+```dotenv
+RAG_APP_NAME=prod-rag
+RAG_RUNTIME_MODE=local
+RAG_ENVIRONMENT=development
+RAG_DEBUG=false
+RAG_API_TOKEN=local-api-token
+RAG_ADMIN_TOKEN=local-admin-token
+RAG_REDIS_URL=redis://127.0.0.1:6379/0
+RAG_SQLITE_PATH=.data/rag.sqlite3
+RAG_INGESTION_ROOT=data/documents
 
-```powershell
-$env:RAG_API_TOKEN = "local-api-token"
-$env:RAG_ADMIN_TOKEN = "local-admin-token"
+RAG_LLM__PROVIDER=local
+RAG_LLM__MODEL=gpt-oss-20b
+RAG_LLM__API_KEY=
+RAG_LLM__BASE_URL=http://127.0.0.1:1234/v1
+RAG_LLM__TIMEOUT_SECONDS=30
+RAG_LLM__MAX_RETRIES=3
+RAG_LLM__TEMPERATURE=0
+RAG_LLM__MAX_TOKENS=2048
+
+RAG_EMBEDDINGS__PROVIDER=local
+RAG_EMBEDDINGS__MODEL=BAAI/bge-m3
+RAG_EMBEDDINGS__DIMENSIONS=1024
+RAG_EMBEDDINGS__BATCH_SIZE=64
+
+RAG_VECTOR_STORE__PROVIDER=qdrant
+RAG_VECTOR_STORE__URL=http://127.0.0.1:6333
+RAG_VECTOR_STORE__API_KEY=
+RAG_VECTOR_STORE__INDEX_NAME=documents
+RAG_VECTOR_STORE__NAMESPACE=default
+
+RAG_CHUNKING__CHUNK_SIZE=800
+RAG_CHUNKING__CHUNK_OVERLAP=120
+RAG_RETRIEVAL__TOP_K=5
+RAG_LOGGING__LEVEL=INFO
+RAG_LOGGING__JSON=true
 ```
 
-Generate high-entropy production tokens instead of using these examples:
+`rag serve`, `rag worker`, `rag doctor`, `rag enqueue`, and `rag query` load tokens and settings
+from `.env`. You do not need to copy tokens into each PowerShell session. Never commit `.env`, and
+replace the example token values before sharing the machine or exposing the API.
+
+The 1024 dimension is part of the index contract for `BAAI/bge-m3`. If an existing Qdrant
+collection was created with a different dimension, create a new collection name or intentionally
+delete the disposable local collection before retrying.
+
+## 5. Start Redis and Qdrant
 
 ```powershell
-python -c "import secrets; print(secrets.token_urlsafe(48))"
+docker compose --profile qdrant up -d redis qdrant
+docker compose --profile qdrant ps
 ```
 
-Never commit `.env`.
+The Compose file publishes:
 
-## 5. Start the local API
+- Redis container port `6379` as `127.0.0.1:6379` by default.
+- Qdrant container port `6333` as `127.0.0.1:6333` by default.
+
+Override the host ports with `REDIS_PORT` or `QDRANT_PORT`, and update the corresponding URLs in
+`.env`. The loopback bindings intentionally prevent access from other hosts.
+
+## 6. Run diagnostics
 
 ```powershell
-uv run rag serve --reload
+uv run rag doctor
 ```
 
-Expected address: `http://localhost:8000`.
+Every check should print `[OK]`. The command verifies:
 
-Use `--reload` only during development. Stop the server with `Ctrl+C`.
+- the `sentence-transformers` package;
+- LM Studio connectivity and the `gpt-oss-20b` model identifier;
+- Redis and Qdrant connectivity;
+- the ingestion-root directory;
+- the parent directory for SQLite.
 
-Open:
+The command creates missing ingestion and SQLite parent directories, but it does not download BGE,
+send a generation request, or prove that a document can be indexed. Complete the following
+end-to-end steps as well.
 
-- Swagger UI: <http://localhost:8000/docs>
-- ReDoc: <http://localhost:8000/redoc>
-- OpenAPI JSON: <http://localhost:8000/openapi.json>
+## 7. Start the API
 
-## 6. Verify health
-
-Open a second PowerShell window:
+Open a dedicated PowerShell window:
 
 ```powershell
-Invoke-RestMethod http://localhost:8000/health/live
-Invoke-RestMethod http://localhost:8000/health/ready
+uv run rag serve
 ```
 
-Both should report an available service.
+The API listens on <http://127.0.0.1:8000>. On first startup, Sentence Transformers may download
+and initialize `BAAI/bge-m3`; wait for Uvicorn to report that startup is complete.
 
-## 7. Add and query a document
+Verify:
 
 ```powershell
-$headers = @{ Authorization = "Bearer local-api-token" }
-
-$document = Invoke-RestMethod `
-  -Method Post `
-  -Uri http://localhost:8000/api/v1/documents `
-  -Headers $headers `
-  -ContentType "application/json" `
-  -Body (@{
-    source = "memory://handbook"
-    text = "Refund requests are accepted within 30 days of purchase."
-    metadata = @{ category = "policy"; tenant_id = "demo" }
-  } | ConvertTo-Json)
-
-$document
+Invoke-RestMethod http://127.0.0.1:8000/health/live
+Invoke-RestMethod http://127.0.0.1:8000/health/ready
 ```
 
-Query it:
+The canonical `rag serve` entry point builds the local runtime: BGE-M3 embeddings, Qdrant vectors,
+SQLite document metadata, LM Studio generation, and a Redis job queue. This differs from calling
+`rag_app.api.create_app()` directly, whose uninjected defaults remain an in-memory demo for tests
+and custom composition.
+
+## 8. Start the worker
+
+Open another dedicated PowerShell window:
 
 ```powershell
-Invoke-RestMethod `
-  -Method Post `
-  -Uri http://localhost:8000/api/v1/query `
-  -Headers $headers `
-  -ContentType "application/json" `
-  -Body (@{
-    query = "How long do I have to request a refund?"
-    top_k = 5
-    filters = @{ category = "policy" }
-  } | ConvertTo-Json -Depth 4)
+uv run rag worker
 ```
 
-The response contains `answer`, `citations`, and `latency_ms`. Data is lost when this API process
-restarts because this mode is intentionally in memory.
+Keep both `rag serve` and `rag worker` running. They use the same Redis queue, Qdrant collection,
+SQLite file, embedding model, and `.env` configuration.
 
-Run the packaged client instead:
+## 9. Enqueue a document and query it
+
+Put a supported file under `data/documents`, for example:
+
+```text
+data/documents/handbook.pdf
+```
+
+The worker rejects files and directories outside the resolved `RAG_INGESTION_ROOT`.
+
+In a third PowerShell window:
 
 ```powershell
-$env:RAG_API_URL = "http://localhost:8000"
-$env:RAG_API_TOKEN = "local-api-token"
-uv run python examples/api_client.py
+uv run rag enqueue data/documents/<file> --wait
 ```
 
-Or query with the CLI:
+`--wait` polls the API until the job succeeds, is cancelled, or reaches the dead-letter state. A
+successful job has been loaded, chunked, embedded, written to Qdrant, and registered in SQLite.
+
+Query the indexed content:
 
 ```powershell
-uv run rag query "What is the refund policy?" --api-token local-api-token
+uv run rag query "What does the document say?"
 ```
 
-## 8. Run the standalone indexing and retrieval example
+The CLI reads `RAG_API_TOKEN` from `.env` and calls the running API. Responses contain an answer,
+citations, and latency.
 
-This example exercises dense hashing, indexing, BM25-style lexical retrieval, reciprocal-rank
-fusion, metadata filtering, and retrieval diagnostics without external services:
+## 10. Stop local infrastructure
+
+Stop the API and worker with `Ctrl+C`, then:
 
 ```powershell
-uv run python examples/local_pipeline.py
+docker compose --profile qdrant down
 ```
 
-Hash embeddings are deterministic test features, not a semantic production embedding model.
-
-## 9. Test file ingestion
-
-The ingestion CLI validates, loads, and chunks a file or directory. It does not insert the chunks
-into the running API or a vector database.
+This keeps Redis and Qdrant volumes. Remove local service data only when intentional:
 
 ```powershell
-uv run rag ingest .\path\to\document.pdf
-uv run rag ingest .\path\to\document-directory
+docker compose --profile qdrant down --volumes
+Remove-Item .data\rag.sqlite3* -ErrorAction SilentlyContinue
 ```
 
-The command prints counts and one result per source. A nonzero process exit code means at least one
-item failed.
+## Production limitations
 
-Supported routes include PDF, modern and legacy Office documents, text/Markdown/source files,
-CSV, JSON, HTML/XHTML, and directories. Exact extension routing and optional system requirements
-are in the [usage guide](usage.md#document-loaders-and-ingestion).
+This flow is intended for one Windows development machine:
 
-## 10. Start with Docker Compose
+- SQLite and source files are host-local and require API/worker filesystem consistency.
+- Redis and Qdrant have loopback-only host ports but no local TLS or credentials.
+- LM Studio is not a hardened, replicated inference service.
+- The API rate limiter is process-local; sparse retrieval uses hash sparse embeddings.
+- Production deployments still need centralized secrets, authenticated service networking,
+  durable source storage, malware scanning, tenant/ACL enforcement, backups, observability,
+  resource limits, high availability, and domain evaluation.
 
-Make sure Docker Desktop is running:
+Do not infer production readiness solely from a successful local ingestion and query.
 
-```powershell
-docker info
-```
+## Next steps
 
-Set local Compose values in the current terminal:
-
-```powershell
-$env:RAG_API_TOKEN = "local-api-token"
-$env:RAG_ADMIN_TOKEN = "local-admin-token"
-$env:POSTGRES_PASSWORD = "local-postgres-password"
-```
-
-### API and Redis
-
-```powershell
-docker compose up --build -d
-docker compose ps
-docker compose logs -f api
-```
-
-Press `Ctrl+C` to leave log viewing; detached containers continue running.
-
-### API, Redis, and worker
-
-```powershell
-docker compose --profile workers up --build -d
-```
-
-### Add pgvector
-
-```powershell
-docker compose --profile workers --profile pgvector up --build -d
-```
-
-### Add Qdrant
-
-```powershell
-docker compose --profile workers --profile qdrant up --build -d
-```
-
-Choose one vector backend for an application deployment. Both can be started for adapter testing,
-but neither is automatically attached to the default API.
-
-Only the API port is published by the provided Compose file. Qdrant and PostgreSQL are reachable
-between containers, not directly from Windows. To run host-side integration tests, add temporary
-port mappings or run the tests inside a container.
-
-### Stop containers
-
-```powershell
-docker compose --profile workers --profile pgvector --profile qdrant down
-```
-
-Keep persisted data by using `down` as shown. Delete local volumes and all their data only when
-intentional:
-
-```powershell
-docker compose --profile workers --profile pgvector --profile qdrant down --volumes
-```
-
-## 11. Run quality checks
-
-```powershell
-# Fast unit tests; configured to exclude slow, integration, and legacy tests
-uv run pytest -q
-
-# Lint
-uv run ruff check src tests scripts examples
-
-# Type check
-uv run mypy src/rag_app
-
-# Build wheel and source distribution
-uv build
-```
-
-Run formatting only when you intend to modify files:
-
-```powershell
-uv run ruff format src tests scripts examples
-```
-
-## 12. Next steps
-
-1. Read [configuration](configuration.md) and select a model, embeddings, and vector store.
-2. Follow [usage](usage.md) for every CLI/API route, worker, adapter, evaluation, and telemetry.
-3. Use [troubleshooting](troubleshooting.md) if startup or loader checks fail.
-4. Before exposing the service, complete the production-wiring and security checklist.
-
-## Official documentation
-
-- [uv installation](https://docs.astral.sh/uv/getting-started/installation/)
-- [uv locking and syncing](https://docs.astral.sh/uv/concepts/projects/sync/)
+- [Configuration reference](configuration.md)
+- [Usage guide](usage.md)
+- [Troubleshooting](troubleshooting.md)
+- [Qdrant quickstart](https://qdrant.tech/documentation/quickstart/)
 - [Docker Compose profiles](https://docs.docker.com/compose/how-tos/profiles/)
-- [FastAPI first steps and interactive docs](https://fastapi.tiangolo.com/tutorial/first-steps/)
-- [Uvicorn/FastAPI manual deployment](https://fastapi.tiangolo.com/deployment/manually/)
-- [Redis on Docker](https://redis.io/docs/latest/operate/oss_and_stack/install/install-stack/docker/)
-- [Qdrant local quickstart](https://qdrant.tech/documentation/quickstart/)
-- [pgvector project documentation](https://github.com/pgvector/pgvector)
+- [Sentence Transformers](https://sbert.net/)

@@ -219,3 +219,8 @@ __marimo__/
 
 tests/data/manual/
 tests/data/generated/
+
+.data/
+*.sqlite3
+*.sqlite3-wal
+*.sqlite3-shm

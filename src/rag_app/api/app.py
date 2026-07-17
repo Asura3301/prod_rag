@@ -8,6 +8,7 @@ import secrets
 import time
 from collections import defaultdict, deque
 from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from dataclasses import asdict
 from typing import Annotated, Any
 from uuid import uuid4
@@ -48,17 +49,34 @@ def create_app(
     if max_body_bytes < 1:
         raise ValueError("max_body_bytes must be positive")
     rag_service = service if service is not None else InMemoryRAGService()
-    redis_url = os.getenv("REDIS_URL")
+    redis_url = os.getenv("RAG_REDIS_URL") or os.getenv("REDIS_URL")
     job_queue = queue or (RedisJobQueue(redis_url) if redis_url else InMemoryJobQueue())
     expected_admin_token = admin_token or os.getenv("RAG_ADMIN_TOKEN")
     expected_api_token = api_token or os.getenv("RAG_API_TOKEN")
     request_times: dict[str, deque[float]] = defaultdict(deque)
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+        del app
+        startup = getattr(rag_service, "startup", None)
+        if callable(startup):
+            await startup()
+        try:
+            yield
+        finally:
+            shutdown = getattr(rag_service, "shutdown", None)
+            if callable(shutdown):
+                await shutdown()
+            close_queue = getattr(job_queue, "aclose", None)
+            if callable(close_queue):
+                await close_queue()
 
     app = FastAPI(
         title="Production RAG API",
         version="1.0.0",
         docs_url="/docs",
         redoc_url="/redoc",
+        lifespan=lifespan,
     )
     app.state.rag_service = rag_service
     app.state.job_queue = job_queue

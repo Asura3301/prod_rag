@@ -42,7 +42,7 @@ dependencies = [
 
 [project.optional-dependencies]
 qdrant = [
-    "qdrant-client>=1.14",
+    "qdrant-client>=1.15,<1.17",
 ]
 pgvector = [
     "pgvector>=0.4",

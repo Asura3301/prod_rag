@@ -1,9 +1,50 @@
 # Usage Guide
 
-This guide covers every public CLI command, HTTP route, loader group, worker, vector adapter,
-retrieval profile, evaluation tool, and operational endpoint currently included in the project.
+This guide describes the functional Windows-local runtime and the lower-level demo interfaces. Run
+commands from the repository root in PowerShell.
 
-## CLI
+## End-to-end local command sequence
+
+Install the two required extras:
+
+```powershell
+uv sync --extra qdrant --extra local-models
+```
+
+Start local infrastructure:
+
+```powershell
+docker compose --profile qdrant up -d redis qdrant
+```
+
+Load `gpt-oss-20b` in LM Studio, start its server on
+`http://127.0.0.1:1234/v1`, and validate dependencies:
+
+```powershell
+uv run rag doctor
+```
+
+Run these long-lived commands in separate PowerShell windows:
+
+```powershell
+uv run rag serve
+```
+
+```powershell
+uv run rag worker
+```
+
+Then enqueue a source under the configured `data/documents` root and query it:
+
+```powershell
+uv run rag enqueue data/documents/<file> --wait
+uv run rag query "What does the document say?"
+```
+
+All commands load settings and API tokens from `.env`. On first service or worker startup,
+Sentence Transformers may need time to download and initialize `BAAI/bge-m3`.
+
+## CLI reference
 
 Show all commands:
 
@@ -11,66 +52,118 @@ Show all commands:
 uv run rag --help
 ```
 
-### Serve
-
-Development:
+### `rag doctor`
 
 ```powershell
+uv run rag doctor
+```
+
+Checks that Sentence Transformers is installed, LM Studio advertises `gpt-oss-20b`, Redis and
+Qdrant are reachable, and the ingestion/SQLite parent directories exist. It does not perform a
+complete embedding, indexing, and generation test.
+
+### `rag serve`
+
+```powershell
+uv run rag serve
+uv run rag serve --host 127.0.0.1 --port 8080
 uv run rag serve --reload
 ```
 
-Custom interface and port:
+Use `--reload` only during development. The command starts the environment-driven local runtime:
+
+- LM Studio at `127.0.0.1:1234/v1` with model `gpt-oss-20b`;
+- Sentence Transformers `BAAI/bge-m3` with 1024-dimensional dense embeddings;
+- Qdrant at `127.0.0.1:6333`;
+- Redis at `127.0.0.1:6379`;
+- SQLite at `.data/rag.sqlite3`.
+
+The exact values come from `.env`.
+
+### `rag worker`
 
 ```powershell
-uv run rag serve --host 127.0.0.1 --port 8080
+uv run rag worker
 ```
 
-Do not use reload in production. The command starts one Uvicorn process; production process
-replication and restart policy belong in the deployment platform.
+The worker consumes Redis `ingest` jobs, requires every source to resolve inside
+`RAG_INGESTION_ROOT`, loads and chunks documents, embeds them, indexes them into Qdrant, and writes
+document records to the shared SQLite database. It retries failed jobs and eventually marks
+unrecoverable work as `dead_letter`.
 
-### Ingest
+The API and worker are separate processes and must remain running together for asynchronous
+ingestion.
+
+### `rag enqueue`
 
 ```powershell
-uv run rag ingest .\documents\policy.pdf
-uv run rag ingest .\documents
+uv run rag enqueue data/documents/<file> --wait
+uv run rag enqueue data/documents --wait
 ```
 
-This validates, loads, normalizes metadata, chunks content, and prints JSON. It does not embed or
-index chunks.
+Options:
 
-### Query
+- `--api-url`: default `http://127.0.0.1:8000`.
+- `--api-token`: overrides `RAG_API_TOKEN` loaded from `.env`.
+- `--idempotency-key`: optional stable de-duplication key.
+- `--timeout`: HTTP timeout, default 60 seconds.
+- `--wait`: poll until `succeeded`, `dead_letter`, or `cancelled`.
+
+The CLI resolves the submitted source to an absolute path. The worker then verifies it remains
+inside the configured ingestion root. A successful waited job is queryable through the local API.
+
+### `rag query`
 
 ```powershell
-uv run rag query "What is the refund policy?" `
-  --api-url http://localhost:8000 `
-  --api-token local-api-token `
-  --top-k 5 `
-  --timeout 60
+uv run rag query "What is the refund policy?"
+uv run rag query "Summarize the handbook" --top-k 8 --timeout 120
 ```
 
-If `--api-token` is omitted, the command reads `RAG_API_TOKEN`.
+Options:
 
-### Evaluate
+- `--api-url`: default `http://127.0.0.1:8000`.
+- `--api-token`: overrides `RAG_API_TOKEN` loaded from `.env`.
+- `--top-k`: number of requested retrieval results, default `5`.
+- `--timeout`: request timeout, default 60 seconds.
+
+The API performs hybrid retrieval and runs the LangGraph generation workflow against LM Studio.
+Responses contain `answer`, `citations`, and `latency_ms`.
+
+### `rag ingest`
+
+```powershell
+uv run rag ingest data/documents/<file>
+uv run rag ingest data/documents
+```
+
+This standalone diagnostic command validates, loads, chunks, and prints a JSON summary. Unlike
+`rag enqueue`, it does not submit a Redis job or index the resulting chunks into the running local
+runtime.
+
+### `rag evaluate`
 
 ```powershell
 uv run rag evaluate --dataset evals/golden_dataset.jsonl
 ```
 
-This command validates/inspects the dataset and lists available metrics. It does not call the
-application or calculate a report until application-specific predictions exist.
+This command inspects the dataset and reports available metrics. It does not produce model
+predictions by itself. Replace starter data with reviewed domain examples before making quality
+claims.
 
 ## HTTP API
+
+The interactive API documentation is available at <http://127.0.0.1:8000/docs> after
+`rag serve` starts.
 
 Set reusable PowerShell values:
 
 ```powershell
-$baseUrl = "http://localhost:8000"
+$baseUrl = "http://127.0.0.1:8000"
 $apiHeaders = @{ Authorization = "Bearer local-api-token" }
 $adminHeaders = @{ Authorization = "Bearer local-admin-token" }
 ```
 
-All `/api/*` routes require the API bearer token when configured. Health endpoints are public.
-Administrative routes require their separate token.
+Use the values actually configured in `.env`.
 
 ### Health
 
@@ -79,9 +172,45 @@ Invoke-RestMethod "$baseUrl/health/live"
 Invoke-RestMethod "$baseUrl/health/ready"
 ```
 
-Use liveness for process restart decisions and readiness for traffic admission.
+Readiness becomes successful after SQLite initialization, BGE dimension validation, and Qdrant
+collection setup complete.
 
-### Create a direct text document
+### Ingestion jobs
+
+The CLI is the simplest local path, but the equivalent API request is:
+
+```powershell
+$job = Invoke-RestMethod `
+  -Method Post `
+  -Uri "$baseUrl/api/v1/ingestion/jobs" `
+  -Headers $apiHeaders `
+  -ContentType "application/json" `
+  -Body (@{
+    source = (Resolve-Path "data/documents/handbook.pdf").Path
+    metadata = @{ category = "handbook" }
+    idempotency_key = "handbook-v1"
+  } | ConvertTo-Json -Depth 4)
+```
+
+List and inspect jobs:
+
+```powershell
+Invoke-RestMethod -Uri "$baseUrl/api/v1/ingestion/jobs" -Headers $apiHeaders
+Invoke-RestMethod -Uri "$baseUrl/api/v1/ingestion/jobs/$($job.id)" -Headers $apiHeaders
+```
+
+Cancellation is best effort:
+
+```powershell
+Invoke-RestMethod `
+  -Method Delete `
+  -Uri "$baseUrl/api/v1/ingestion/jobs/$($job.id)" `
+  -Headers $apiHeaders
+```
+
+### Direct text documents
+
+Direct API text insertion is also persistent in the `rag serve` local runtime:
 
 ```powershell
 $created = Invoke-RestMethod `
@@ -90,36 +219,24 @@ $created = Invoke-RestMethod `
   -Headers $apiHeaders `
   -ContentType "application/json" `
   -Body (@{
-    source = "memory://refund-policy"
+    source = "manual://refund-policy"
     text = "Refund requests are accepted within 30 days of purchase."
-    metadata = @{
-      tenant_id = "demo"
-      category = "policy"
-      acl = @("reader")
-    }
-  } | ConvertTo-Json -Depth 5)
-
-$created.id
+    metadata = @{ category = "policy" }
+  } | ConvertTo-Json -Depth 4)
 ```
 
-### List, get, and delete documents
+List, retrieve, or delete:
 
 ```powershell
 Invoke-RestMethod -Uri "$baseUrl/api/v1/documents" -Headers $apiHeaders
-
-Invoke-RestMethod `
-  -Uri "$baseUrl/api/v1/documents/$($created.id)" `
-  -Headers $apiHeaders
-
-Invoke-RestMethod `
-  -Method Delete `
-  -Uri "$baseUrl/api/v1/documents/$($created.id)" `
-  -Headers $apiHeaders
+Invoke-RestMethod -Uri "$baseUrl/api/v1/documents/$($created.id)" -Headers $apiHeaders
+Invoke-RestMethod -Method Delete -Uri "$baseUrl/api/v1/documents/$($created.id)" -Headers $apiHeaders
 ```
 
-The delete route returns HTTP `204` with no body.
+Document metadata lives in SQLite and vectors live in Qdrant. Removing one store independently can
+leave local state inconsistent.
 
-### Query
+### Query and SSE
 
 ```powershell
 Invoke-RestMethod `
@@ -134,11 +251,7 @@ Invoke-RestMethod `
   } | ConvertTo-Json -Depth 4)
 ```
 
-`top_k` must be between 1 and 100. In the default API, filters perform metadata equality matching.
-
-### Stream a query with SSE
-
-PowerShell's standard REST cmdlet does not present SSE events conveniently. Use curl:
+For server-sent events:
 
 ```powershell
 curl.exe -N -X POST "$baseUrl/api/v1/query/stream" `
@@ -147,102 +260,34 @@ curl.exe -N -X POST "$baseUrl/api/v1/query/stream" `
   -d '{\"query\":\"How long is the refund period?\",\"top_k\":5,\"filters\":{}}'
 ```
 
-Events arrive in this order: `token`, `citations`, `done`. The current API splits a completed
-answer into SSE token events; it is not provider-level token streaming.
-
-### Enqueue an ingestion job
-
-```powershell
-$job = Invoke-RestMethod `
-  -Method Post `
-  -Uri "$baseUrl/api/v1/ingestion/jobs" `
-  -Headers $apiHeaders `
-  -ContentType "application/json" `
-  -Body (@{
-    source = "D:\shared-documents\policy.pdf"
-    metadata = @{ tenant_id = "demo" }
-    idempotency_key = "policy-v1"
-  } | ConvertTo-Json -Depth 4)
-
-$job
-```
-
-The same idempotency key returns the existing job.
-
-List and inspect:
-
-```powershell
-Invoke-RestMethod -Uri "$baseUrl/api/v1/ingestion/jobs" -Headers $apiHeaders
-Invoke-RestMethod -Uri "$baseUrl/api/v1/ingestion/jobs/$($job.id)" -Headers $apiHeaders
-```
-
-Cancel:
-
-```powershell
-Invoke-RestMethod `
-  -Method Delete `
-  -Uri "$baseUrl/api/v1/ingestion/jobs/$($job.id)" `
-  -Headers $apiHeaders
-```
-
-Cancellation is best effort and does not interrupt an already-running loader.
+The current SSE endpoint emits a completed answer as `token` events followed by `citations` and
+`done`; it is not provider-level token streaming.
 
 ### Metrics and debug state
 
 ```powershell
 Invoke-WebRequest -Uri "$baseUrl/metrics" -Headers $adminHeaders |
   Select-Object -ExpandProperty Content
-
 Invoke-RestMethod -Uri "$baseUrl/debug/state" -Headers $adminHeaders
 ```
 
-Metrics currently report ingestion-job counts by state. If no admin token is configured, these
-routes return `503`.
+These routes require `RAG_ADMIN_TOKEN`; they return `503` when it is empty.
 
-## Document loaders and ingestion
+## Document loaders
 
-Routing is extension based.
+Local routing is extension based:
 
-### Docling
+- Docling: `.pdf`, `.docx`, `.pptx`, `.xlsx`, `.html`, `.xhtml`, `.md`.
+- Unstructured: `.doc`, `.ppt`, `.xls`, `.rtf`, `.epub`, `.eml`, `.msg`, `.odt`, `.odp`,
+  `.ods`, `.rst`, `.org`.
+- Plain text/source: `.txt`, `.log`, `.py`, `.js`, `.ts`, `.sh`, `.yaml`, `.yml`, `.ini`,
+  `.cfg`, `.ipynb`.
+- Structured: `.csv` and `.json`.
 
-Extensions:
+Some legacy Office formats require LibreOffice and `soffice.exe` on `PATH`. PDF loading falls back
+to PyPDF when Docling fails.
 
-- `.pdf`, `.docx`, `.pptx`, `.xlsx`, `.html`, `.xhtml`, `.md`.
-
-Docling produces document chunks using its `HybridChunker`. It is suitable for layout-rich modern
-documents.
-
-```powershell
-uv run rag ingest .\documents\report.pdf
-```
-
-### Unstructured
-
-Extensions:
-
-- `.doc`, `.ppt`, `.xls`, `.rtf`, `.epub`, `.eml`, `.msg`, `.odt`, `.odp`, `.ods`, `.rst`, `.org`.
-
-Some legacy formats require external converters. On Windows, install LibreOffice and ensure
-`soffice.exe` is on `PATH`:
-
-```powershell
-soffice --version
-```
-
-### Plain text and source files
-
-Extensions:
-
-- `.txt`, `.log`, `.py`, `.js`, `.ts`, `.sh`, `.yaml`, `.yml`, `.ini`, `.cfg`, `.ipynb`.
-
-Notebook files are currently loaded as raw text/JSON rather than notebook cells.
-
-### Structured data
-
-- `.csv` uses `CSVDocumentLoader`.
-- `.json` uses `JSONDocumentLoader`; its default jq schema is `.[].content`.
-
-The default JSON shape is therefore:
+The default JSON loader schema is `.[].content`, so the expected shape is:
 
 ```json
 [
@@ -251,371 +296,73 @@ The default JSON shape is therefore:
 ]
 ```
 
-Use the loader class directly to select another jq expression:
-
-```python
-from rag_app.ingestion.document_loaders import JSONDocumentLoader
-
-documents = JSONDocumentLoader(
-    jq_schema=".records[].body",
-    text_content=True,
-).load("documents/data.json")
-print(len(documents))
-```
-
 ### Web pages
 
-Use `WebBaseDocumentLoader` directly:
+Use the project wrapper `WebDocumentLoader`:
 
 ```python
-from rag_app.ingestion.document_loaders import WebBaseDocumentLoader
+from rag_app.ingestion import WebDocumentLoader
 
-documents = WebBaseDocumentLoader().load("https://example.com")
+documents = WebDocumentLoader().load("https://example.com")
 print(documents[0].metadata)
 ```
 
-Only absolute public HTTP(S) URLs are accepted. Credentials, localhost, and literal non-global IP
-addresses are rejected. Production deployments still need DNS resolution/rebinding protection,
-egress policy, response-size limits, and redirect validation.
+The wrapper delegates fetching to LangChain's `WebBaseLoader` after URL validation.
+
+Only absolute public HTTP(S) URLs are accepted. Production deployments still need DNS
+rebinding/redirect defenses, controlled egress, response limits, and content scanning.
 
 ### File safety
 
-Local file validation:
+The local worker confines sources to the ingestion root. File validation also checks regular-file
+status, allowed extension, a default 100 MiB limit, and basic MIME/extension consistency.
 
-- Resolves the path and requires a regular file.
-- Allows only the listed extensions.
-- Rejects files larger than 100 MiB by default.
-- Optionally confines files to an allowed root.
-- Performs basic MIME/extension consistency checks.
+Parsing libraries are not malware scanners. Treat untrusted uploads as hostile and isolate parsing
+in production.
 
-Do not treat parsing libraries as malware scanners. Scan untrusted uploads before ingestion and run
-parsers in isolated, resource-limited workers.
+## Data ownership and reset
 
-## Worker
+The local flow persists different state in different places:
 
-Start Redis first. With Docker:
+- `.data/rag.sqlite3`: document registry and chunk identifiers.
+- Qdrant `qdrant-data` volume: dense/sparse vectors and payloads.
+- Redis `redis-data` volume: asynchronous job state.
+- Sentence Transformers cache: downloaded `BAAI/bge-m3` artifacts.
 
-```powershell
-docker compose up redis -d
-```
-
-Start the worker on the host:
+Back up or reset these as a coordinated set. For a disposable reset:
 
 ```powershell
-$env:REDIS_URL = "redis://localhost:6379/0"
-uv run python scripts/run_worker.py
+docker compose --profile qdrant down --volumes
+Remove-Item .data\rag.sqlite3* -ErrorAction SilentlyContinue
 ```
 
-Or start API, Redis, and worker together:
+## Injectable/demo API
 
-```powershell
-docker compose --profile workers up --build -d
-```
+`uv run rag serve` uses `rag_app.runtime.composition.create_runtime_app` and is the default local
+runtime.
 
-The worker accepts `ingest` jobs, retries failures up to three attempts, and then marks a job
-`dead_letter`.
-
-Current limitation: the worker loads and chunks but does not call `IndexingService`. Its in-memory
-registry is created per job. In Compose there is also no host-document bind mount, so a Windows
-path submitted to the containerized worker is not accessible. Add shared object storage or a
-controlled bind volume as part of production composition.
-
-## Indexing and hybrid retrieval
-
-Run the complete infrastructure-free example:
-
-```powershell
-uv run python examples/local_pipeline.py
-```
-
-Its construction pattern is:
+`rag_app.api.create_app` remains independently usable:
 
 ```python
-from rag_app.indexing import HashEmbeddingProvider, IndexingService, InMemoryVectorStore
-from rag_app.retrieval import HybridRetriever
+from rag_app.api import create_app
 
-embeddings = HashEmbeddingProvider(dimensions=128)
-store = InMemoryVectorStore()
-indexing = IndexingService(embeddings, store)
-retriever = HybridRetriever(embeddings, store)
+app = create_app()
 ```
 
-Call `await store.create(128)`, `await indexing.index(chunks)`, and
-`await retriever.retrieve(...)` inside an async function, as the example does.
-
-### Qdrant adapter
-
-Install and start:
-
-```powershell
-uv sync --extra qdrant
-docker compose --profile qdrant up qdrant -d
-```
-
-The provided Compose service does not publish Qdrant to Windows. For host-side testing, add a
-temporary `6333:6333` port mapping or run a separate official container:
-
-```powershell
-docker run --name prod-rag-qdrant -p 6333:6333 `
-  -v prod-rag-qdrant-data:/qdrant/storage `
-  qdrant/qdrant:v1.15.4
-```
-
-Use the project adapter:
-
-```python
-import asyncio
-
-from rag_app.indexing import QdrantVectorStore, VectorRecord
-
-
-async def main() -> None:
-    store = QdrantVectorStore("documents", url="http://localhost:6333")
-    await store.create(3)
-    await store.upsert(
-        [VectorRecord("example-1", [1.0, 0.0, 0.0], "Example text", {"tenant_id": "demo"})]
-    )
-    results = await store.query([1.0, 0.0, 0.0], filters={"tenant_id": "demo"})
-    print(results[0].text)
-
-
-asyncio.run(main())
-```
-
-Run the contract test:
-
-```powershell
-$env:RAG_TEST_QDRANT_URL = "http://localhost:6333"
-uv run pytest -q -m integration tests/integration/test_vector_store_contract.py
-```
-
-The adapter creates named `dense` and `sparse` vectors and supports metadata payload filters.
-
-### pgvector adapter
-
-Install:
-
-```powershell
-uv sync --extra pgvector
-```
-
-Start a host-accessible pgvector container:
-
-```powershell
-docker run --name prod-rag-postgres -d `
-  -e POSTGRES_DB=rag `
-  -e POSTGRES_USER=rag `
-  -e POSTGRES_PASSWORD=local-postgres-password `
-  -p 5432:5432 `
-  -v prod-rag-postgres-data:/var/lib/postgresql/data `
-  pgvector/pgvector:pg16
-```
-
-Use the adapter:
-
-```python
-import asyncio
-
-from rag_app.indexing import PgVectorStore, VectorRecord
-
-
-async def main() -> None:
-    store = PgVectorStore(
-        "postgresql://rag:local-postgres-password@localhost:5432/rag",
-        table="documents",
-    )
-    await store.create(3)
-    await store.upsert(
-        [VectorRecord("example-1", [1.0, 0.0, 0.0], "Example text", {"tenant_id": "demo"})]
-    )
-    results = await store.query([1.0, 0.0, 0.0], filters={"tenant_id": "demo"})
-    print(results[0].text)
-
-
-asyncio.run(main())
-```
-
-`create()` enables pgvector, creates the table, a generated full-text search column, a GIN index,
-and an HNSW cosine index.
-
-Run the contract test:
-
-```powershell
-$env:RAG_TEST_PGVECTOR_DSN = "postgresql://rag:local-postgres-password@localhost:5432/rag"
-uv run pytest -q -m integration tests/integration/test_vector_store_contract.py
-```
-
-### Production embeddings
-
-OpenAI-compatible:
-
-```python
-from rag_app.indexing import OpenAICompatibleEmbeddingProvider
-
-embeddings = OpenAICompatibleEmbeddingProvider(
-    "text-embedding-3-small",
-    api_key="replace-with-secret",
-)
-```
-
-Prefer injecting credentials from a secret store rather than literals.
-
-Local Sentence Transformers:
-
-```python
-from rag_app.indexing import HuggingFaceEmbeddingProvider
-
-embeddings = HuggingFaceEmbeddingProvider("BAAI/bge-small-en-v1.5")
-```
-
-Install `local-models` first. Model loading and download occur lazily.
-
-### Retrieval filters
-
-`RetrievalRequest` supports ordinary equality filters plus dedicated tenant and ACL inputs:
-
-```python
-from rag_app.retrieval import RetrievalRequest
-
-request = RetrievalRequest(
-    query="refund period",
-    top_k=5,
-    profile="balanced",
-    tenant_id="tenant-a",
-    principals=("reader",),
-    filters={"language": "en"},
-    max_tokens=2000,
-)
-```
-
-Tenant and ACL constraints must be derived from authenticated server context in production, not
-trusted from arbitrary client input.
-
-## LangGraph generation
-
-`build_rag_graph(retriever, llm, checkpointer=...)` compiles a bounded workflow with request
-validation, query analysis, retrieval, evidence grading, one rewrite opportunity, context
-construction, answer generation, citation validation, and abstention.
-
-This graph is not connected to the default API. Compose it with a retriever and chat model, then
-inject a `RAGService` implementation that invokes the graph. The graph contract and state are in
-`src/rag_app/generation/workflow.py`; PostgreSQL checkpoint construction is in
-`src/rag_app/generation/persistence.py`.
-
-Do not enable the graph in production until the adapter maps authenticated tenant/ACL context,
-persists index version metadata, and translates graph citations to the public API schema.
-
-## Evaluation
-
-Golden data is JSON Lines. Each row requires:
-
-```json
-{"id":"refund-policy","query":"How long do I have to request a refund?","relevant_document_ids":["policy-refunds"],"expected_citation_ids":["policy-refunds"],"reference_answer":"Refund requests are accepted within 30 days of purchase."}
-```
-
-Application code must produce one `EvaluationPrediction` for every example. Then:
-
-```python
-from rag_app.evaluation import (
-    EvaluationPrediction,
-    evaluate_predictions,
-    load_golden_dataset,
-)
-
-examples = load_golden_dataset("evals/golden_dataset.jsonl")
-predictions = [
-    EvaluationPrediction(
-        example_id=example.id,
-        retrieved_document_ids=example.relevant_document_ids,
-        citation_ids=example.expected_citation_ids,
-        answer=example.reference_answer,
-        latency_ms=10.0,
-    )
-    for example in examples
-]
-report = evaluate_predictions(examples, predictions, k=5)
-print(report.to_dict())
-```
-
-Use `assert_no_regression(candidate, baseline)` to enforce quality and p95-latency tolerances.
-Replace the starter data with reviewed, versioned, domain-specific cases before making quality
-claims.
-
-## Loader smoke tests
-
-The main suite excludes slow, integration, and legacy tests:
-
-```powershell
-uv run pytest -q
-```
-
-Run the loader script:
-
-```powershell
-uv run python tests/test_loaders.py
-```
-
-It generates some fixtures under `tests/data/generated`, can request `https://example.com`, and
-needs manually supplied fixtures for some formats. Legacy `.doc` tests skip when LibreOffice is
-unavailable.
-
-Select marker groups explicitly:
-
-```powershell
-uv run pytest -q -m slow
-uv run pytest -q -m integration
-uv run pytest -q -m legacy
-```
-
-## Pre-commit
-
-Install hooks:
-
-```powershell
-uv run pre-commit install
-```
-
-Run all hooks:
-
-```powershell
-uv run pre-commit run --all-files
-```
-
-Hooks include Ruff checks/formatting and basic TOML, YAML, conflict, whitespace, and file-size
-checks.
-
-## OpenTelemetry
-
-Install the optional packages and point the API at an OTLP/HTTP collector:
-
-```powershell
-uv sync --extra observability
-$env:OTEL_SERVICE_NAME = "prod-rag-api"
-$env:OTEL_EXPORTER_OTLP_ENDPOINT = "http://localhost:4318/v1/traces"
-uv run rag serve
-```
-
-If the collector is in Compose, use its service hostname rather than `localhost`. Missing optional
-packages disable tracing rather than preventing API startup.
-
-## Build and release tools
-
-Build locally:
-
-```powershell
-uv build
-```
-
-Artifacts are written under `dist/`. GitHub Actions includes CI, dependency management, and tagged
-release workflows. Releases are triggered by version tags; review workflow permissions and
-repository secrets before using them.
-
-## Official references
-
-- [FastAPI interactive API documentation](https://fastapi.tiangolo.com/tutorial/first-steps/)
-- [Docker Compose profiles](https://docs.docker.com/compose/how-tos/profiles/)
-- [Qdrant quickstart](https://qdrant.tech/documentation/quickstart/)
-- [Qdrant sparse vectors](https://qdrant.tech/documentation/manage-data/vectors/)
-- [pgvector HNSW and Docker](https://github.com/pgvector/pgvector)
-- [Redis Docker installation](https://redis.io/docs/latest/operate/oss_and_stack/install/install-stack/docker/)
-- [uv dependency extras](https://docs.astral.sh/uv/concepts/projects/dependencies/)
+With no injected service or queue, this lower-level factory uses in-memory demo implementations.
+Tests and custom applications can inject their own adapters. Do not launch it directly and assume
+that `.env` automatically selects the Qdrant/SQLite local service.
+
+## Production limitations
+
+The local command flow demonstrates end-to-end behavior, not a production topology:
+
+- API and worker share a local SQLite file and host document paths.
+- Qdrant and Redis are loopback-bound and unauthenticated by default.
+- LM Studio is desktop model serving.
+- Rate limiting is process-local, SSE is not provider-token streaming, and the sparse embedding
+  implementation is deterministic hashing.
+- Tenant/ACL context, service authentication, TLS, durable uploads, scanning, backups, distributed
+  coordination, observability, resource controls, and high availability require deployment work.
+
+Run integration tests and reviewed domain evaluations before promoting a different composition.

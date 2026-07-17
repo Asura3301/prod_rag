@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import inspect
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -13,6 +15,7 @@ from .prompts import ABSTENTION_TEXT, ANSWER_PROMPT, QUERY_REWRITE_PROMPT
 from .state import STATE_VERSION, Citation, Evidence, RAGResponse, RAGState
 
 _CITATION_PATTERN = re.compile(r"\[(C\d+)\]")
+_CITATION_BRACKETS = str.maketrans({"【": "[", "】": "]", "［": "[", "］": "]"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -49,11 +52,17 @@ def _message_text(response: Any) -> str:
     return str(content).strip()
 
 
-def _invoke(component: Any, value: str) -> Any:
+async def _ainvoke(component: Any, value: str) -> Any:
+    if hasattr(component, "ainvoke"):
+        return await component.ainvoke(value)
+    if hasattr(component, "retrieve"):
+        result = component.retrieve(value)
+        return await result if inspect.isawaitable(result) else result
     if hasattr(component, "invoke"):
-        return component.invoke(value)
+        return await asyncio.to_thread(component.invoke, value)
     if callable(component):
-        return component(value)
+        result = component(value)
+        return await result if inspect.isawaitable(result) else result
     raise TypeError(f"{type(component).__name__} is neither callable nor invokable")
 
 
@@ -102,8 +111,10 @@ class RAGWorkflow:
         query = " ".join(state["query"].split())
         return {"retrieval_query": query}
 
-    def retrieve(self, state: RAGState) -> dict[str, Any]:
-        result = _invoke(self.retriever, state["retrieval_query"])
+    async def retrieve(self, state: RAGState) -> dict[str, Any]:
+        result = await _ainvoke(self.retriever, state["retrieval_query"])
+        if hasattr(result, "candidates"):
+            result = result.candidates
         if result is None:
             documents: list[Any] = []
         elif isinstance(result, (str, bytes, Mapping)):
@@ -133,8 +144,12 @@ class RAGWorkflow:
             score_value = document.get("score", metadata.get("score", score))
         else:
             metadata = dict(getattr(document, "metadata", {}) or {})
-            content = getattr(document, "page_content", getattr(document, "content", ""))
-            score_value = metadata.get("score", score)
+            content = getattr(
+                document,
+                "page_content",
+                getattr(document, "content", getattr(document, "text", "")),
+            )
+            score_value = getattr(document, "score", metadata.get("score", score))
 
         text = str(content or "").strip()
         if not text:
@@ -150,12 +165,14 @@ class RAGWorkflow:
             or metadata.get("document_id")
             or f"chunk-{index}"
         )
+        document_id = str(metadata.get("document_id") or chunk_id)
         source = str(metadata.get("source") or metadata.get("url") or "unknown")
         page = metadata.get("page", metadata.get("page_number"))
         section_value = metadata.get("section", metadata.get("heading"))
         return {
             "citation_id": f"C{index}",
             "chunk_id": chunk_id,
+            "document_id": document_id,
             "source": source,
             "page": page,
             "section": str(section_value) if section_value is not None else None,
@@ -184,14 +201,14 @@ class RAGWorkflow:
             return "rewrite_query"
         return "build_context"
 
-    def rewrite_query(self, state: RAGState) -> dict[str, Any]:
+    async def rewrite_query(self, state: RAGState) -> dict[str, Any]:
         if state.get("rewrite_count", 0) >= self.config.max_rewrites:
             return {}
         prompt = QUERY_REWRITE_PROMPT.format(
             original_query=state["original_query"],
             retrieval_query=state["retrieval_query"],
         )
-        rewritten = _message_text(_invoke(self.llm, prompt))
+        rewritten = _message_text(await _ainvoke(self.llm, prompt))
         return {
             "retrieval_query": rewritten or state["retrieval_query"],
             "rewrite_count": state.get("rewrite_count", 0) + 1,
@@ -211,15 +228,15 @@ class RAGWorkflow:
             )
         return {"context": "\n\n".join(blocks)[: self.config.max_context_chars]}
 
-    def generate_answer(self, state: RAGState) -> dict[str, Any]:
+    async def generate_answer(self, state: RAGState) -> dict[str, Any]:
         if not state.get("evidence"):
             return {"draft_answer": ABSTENTION_TEXT, "status": "abstained"}
         prompt = ANSWER_PROMPT.format(query=state["original_query"], context=state["context"])
-        answer = _message_text(_invoke(self.llm, prompt))
+        answer = _message_text(await _ainvoke(self.llm, prompt))
         return {"draft_answer": answer or ABSTENTION_TEXT}
 
     def validate_citations(self, state: RAGState) -> dict[str, Any]:
-        answer = state.get("draft_answer", ABSTENTION_TEXT).strip()
+        answer = state.get("draft_answer", ABSTENTION_TEXT).strip().translate(_CITATION_BRACKETS)
         if answer == ABSTENTION_TEXT or not state.get("evidence"):
             return {
                 "draft_answer": ABSTENTION_TEXT,
@@ -238,6 +255,7 @@ class RAGWorkflow:
             }
         ordered_unique = list(dict.fromkeys(cited))
         return {
+            "draft_answer": answer,
             "status": "answered",
             "valid_citation_ids": ordered_unique,
         }
@@ -253,9 +271,12 @@ class RAGWorkflow:
                 {
                     "citation_id": citation_id,
                     "chunk_id": item["chunk_id"],
+                    "document_id": item["document_id"],
                     "source": item["source"],
                     "page": item["page"],
                     "section": item["section"],
+                    "excerpt": item["content"][:280],
+                    "score": item["score"],
                 }
             )
         status = state.get("status", "abstained")

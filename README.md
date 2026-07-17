@@ -1,122 +1,124 @@
 # Production RAG Template
 
-A production-oriented retrieval-augmented generation service with explicit boundaries for
-ingestion, retrieval/generation, asynchronous work, evaluation, and operations. The API and
-worker adapters are dependency-injectable; local development and tests use deterministic,
-in-memory implementations and require no infrastructure.
+A production-oriented RAG codebase with a functional Windows-local runtime. The default
+`rag serve` command composes LM Studio, Sentence Transformers, Qdrant, Redis, and SQLite into an
+end-to-end API; ingestion jobs handled by `rag worker` become queryable through that API.
 
-## Quickstart
+## Windows-local quickstart
 
-Python 3.12 is required.
+Prerequisites:
+
+- Python 3.12 and [uv](https://docs.astral.sh/uv/).
+- Docker Desktop using Linux containers.
+- [LM Studio](https://lmstudio.ai/) with `gpt-oss-20b` loaded and its OpenAI-compatible server
+  listening on `http://127.0.0.1:1234/v1`.
+
+From the repository root in PowerShell:
 
 ```powershell
-uv sync
-$env:RAG_API_TOKEN = "local-api-token"
-$env:RAG_ADMIN_TOKEN = "local-admin-token"
-uv run rag serve --reload
+uv sync --extra qdrant --extra local-models
+Copy-Item .env.example .env
+docker compose --profile qdrant up -d redis qdrant
+uv run rag doctor
 ```
 
-Open `http://localhost:8000/docs`, or verify the service:
+Use the canonical nested environment names in `.env`. For the local flow, verify at least:
 
-```bash
-curl http://localhost:8000/health/ready
-curl -X POST http://localhost:8000/api/v1/documents \
-  -H "Authorization: Bearer local-api-token" \
-  -H "Content-Type: application/json" \
-  -d '{"source":"memory://handbook","text":"Refunds are available within thirty days."}'
-curl -X POST http://localhost:8000/api/v1/query \
-  -H "Authorization: Bearer local-api-token" \
-  -H "Content-Type: application/json" \
-  -d '{"query":"What is the refund policy?","top_k":5}'
+```dotenv
+RAG_RUNTIME_MODE=local
+RAG_API_TOKEN=local-api-token
+RAG_ADMIN_TOKEN=local-admin-token
+RAG_REDIS_URL=redis://127.0.0.1:6379/0
+RAG_SQLITE_PATH=.data/rag.sqlite3
+RAG_INGESTION_ROOT=data/documents
+
+RAG_LLM__PROVIDER=local
+RAG_LLM__MODEL=gpt-oss-20b
+RAG_LLM__BASE_URL=http://127.0.0.1:1234/v1
+
+RAG_EMBEDDINGS__PROVIDER=local
+RAG_EMBEDDINGS__MODEL=BAAI/bge-m3
+RAG_EMBEDDINGS__DIMENSIONS=1024
+
+RAG_VECTOR_STORE__PROVIDER=qdrant
+RAG_VECTOR_STORE__URL=http://127.0.0.1:6333
+RAG_VECTOR_STORE__INDEX_NAME=documents
 ```
 
-The default service is intentionally ephemeral. Inject production retrieval and queue adapters
-through `create_app(service=..., queue=...)`.
+Tokens and all other `RAG_*` values are loaded from `.env`; exporting them manually is not
+required. Do not commit `.env`.
+
+Start the API and worker in separate PowerShell windows:
+
+```powershell
+uv run rag serve
+```
+
+```powershell
+uv run rag worker
+```
+
+Place a supported file under `data/documents`, then use a third window:
+
+```powershell
+uv run rag enqueue data/documents/<file> --wait
+uv run rag query "What does the document say?"
+```
+
+The first API or worker startup can take time while Sentence Transformers downloads and initializes
+`BAAI/bge-m3`. That model produces 1024-dimensional embeddings, so the Qdrant collection must use
+dimension `1024`.
+
+Redis is published only on `127.0.0.1:6379` by default and Qdrant only on
+`127.0.0.1:6333`. SQLite document metadata is stored in `.data/rag.sqlite3`; vectors are persisted
+in the Qdrant volume. The worker only accepts sources inside the configured
+`data/documents` ingestion root.
+
+## Runtime entry points
+
+`uv run rag serve` is the canonical API entry point. It calls the environment-driven composition
+root and uses the local persistent runtime.
+
+`rag_app.api.create_app` remains a dependency-injectable factory for tests, custom composition, and
+the in-memory demo. Calling it directly without injected adapters does **not** select the local
+Qdrant/SQLite runtime.
 
 ## Documentation
 
-Start here:
+- [Getting started](docs/getting-started.md): complete Windows-local setup and first ingestion.
+- [Configuration](docs/configuration.md): canonical environment schema and ports.
+- [Usage](docs/usage.md): CLI, API, loaders, and local-runtime behavior.
+- [Troubleshooting](docs/troubleshooting.md): diagnostics for LM Studio, BGE, Redis, Qdrant,
+  SQLite, and ingestion.
+- [Architecture](docs/architecture.md), [deployment](docs/deployment.md),
+  [security](docs/security.md), and [evaluation](docs/evaluation.md): broader design material.
 
-- [Getting started](docs/getting-started.md): Windows-first installation, first API query,
-  ingestion, Docker profiles, and verification.
-- [Configuration reference](docs/configuration.md): every environment variable, provider recipe,
-  Compose setting, and current runtime-wiring status.
-- [Usage guide](docs/usage.md): CLI, all HTTP routes, loaders, worker, Qdrant, pgvector, hybrid
-  retrieval, evaluation, telemetry, and runnable examples.
-- [Troubleshooting](docs/troubleshooting.md): startup, authentication, Docker, Redis, vector-store,
-  loader, telemetry, and test failures.
+## Production limitations
 
-The default API is a functional in-memory demo. Optional production adapters are implemented but
-must be explicitly composed into a persistent `RAGService`; enabling a database Compose profile
-alone does not change the API backend.
+The Windows-local flow is functional, but it is not a production deployment:
 
-## Architecture and profiles
+- SQLite is a local document registry, and the API and worker must share the same host filesystem.
+- Redis and Qdrant are bound to loopback for local development; no TLS or service authentication is
+  configured by default.
+- LM Studio is a desktop inference server, not a replicated or hardened model-serving tier.
+- Rate limiting is process-local, ingestion reads host files, sparse vectors use the deterministic
+  hash implementation, and production tenant/ACL enforcement still requires deployment-specific
+  composition.
+- Backups, secret management, observability, malware scanning, resource limits, high availability,
+  and reviewed domain evaluations remain operator responsibilities.
 
-- Ingestion: validated local/web sources, Docling for layout-rich documents,
-Unstructured for legacy formats, specialized CSV/JSON loaders, deterministic
-chunk IDs, hashes, versions, and idempotent registry behavior.
-- Indexing: cached/batched dense embeddings plus optional sparse embeddings.
-Qdrant uses named dense/sparse vectors; pgvector uses HNSW plus PostgreSQL
-full-text search.
-- Retrieval: `fast` (dense), `balanced` (dense + lexical + RRF), and `quality`
-(hybrid + reranker + neighboring context) profiles with ACL filters applied
-before ranking.
-- Generation: a bounded LangGraph workflow that retries retrieval at most once,
-validates citations, abstains without evidence, and accepts a production
-Postgres checkpointer.
-- Operations: FastAPI, SSE, Redis-backed jobs, request IDs, API/admin tokens,
-rate limiting, structured logs, Prometheus-compatible metrics, and optional
-OpenTelemetry export.
+## Validation
 
-The primary adapters are Qdrant and PostgreSQL/pgvector. The deterministic
-in-memory store and hash embeddings exist for tests and demos; they are not
-semantic production substitutes. See [architecture](docs/architecture.md) and
-the ADRs under `docs/adr/`.
-
-## Containers
-
-```bash
-# API + Redis (set non-default API/admin tokens outside local development)
-docker compose up --build
-
-# Include worker and choose one vector store
-docker compose --profile workers --profile pgvector up --build
-docker compose --profile workers --profile qdrant up --build
-```
-
-Set `RAG_ADMIN_TOKEN` before exposing the service. `/metrics` and `/debug/state` return 503 when
-no token is configured and require `Authorization: Bearer <token>` otherwise.
-
-## API
-
-- `POST /api/v1/ingestion/jobs`; `GET/DELETE /api/v1/ingestion/jobs/{id}`
-- `POST/GET /api/v1/documents`; `GET/DELETE /api/v1/documents/{id}`
-- `POST /api/v1/query`; `POST /api/v1/query/stream` (SSE)
-- `GET /health/live`; `GET /health/ready`
-- protected `GET /metrics`; protected `GET /debug/state`
-
-See [architecture](docs/architecture.md), [deployment](docs/deployment.md),
-[security](docs/security.md), [evaluation](docs/evaluation.md), and the
-[complete usage guide](docs/usage.md). Runnable examples are available under `examples/`.
-
-## Evaluation and tests
-
-The evaluation package includes Recall@k, Precision@k, MRR, nDCG@k, citation precision/recall,
-and latency summaries. The starter golden set is `evals/golden_dataset.jsonl`.
-
-```bash
+```powershell
 uv run pytest -q
 uv run ruff check src tests scripts examples
 uv run mypy src/rag_app
 ```
 
-Quality changes should be evaluated separately from ordinary unit tests.
-`rag_app.evaluation` loads JSONL golden data, computes retrieval/citation/
-latency reports, and enforces candidate-versus-baseline tolerances. The starter
-dataset is intentionally small and must be replaced or extended with reviewed,
-domain-specific cases before making quality claims.
+The starter evaluation data is illustrative only. Replace it with reviewed, domain-specific cases
+before making quality claims.
 
-## LICENSE
+## License
 
 [MIT](LICENSE)
 

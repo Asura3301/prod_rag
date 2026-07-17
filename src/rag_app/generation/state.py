@@ -10,6 +10,7 @@ STATE_VERSION = 1
 class Evidence(TypedDict):
     citation_id: str
     chunk_id: str
+    document_id: str
     source: str
     page: int | str | None
     section: str | None
@@ -20,9 +21,12 @@ class Evidence(TypedDict):
 class Citation(TypedDict):
     citation_id: str
     chunk_id: str
+    document_id: str
     source: str
     page: int | str | None
     section: str | None
+    excerpt: str
+    score: float | None
 
 
 class RAGResponse(TypedDict):

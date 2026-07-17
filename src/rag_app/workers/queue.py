@@ -4,11 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import json
-import math
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
-from typing import Any, Protocol
+from typing import Any, Protocol, cast
 from uuid import uuid4
 
 
@@ -162,6 +161,9 @@ class RedisJobQueue:
     def _job_key(self, job_id: str) -> str:
         return f"{self._ns}:job:{job_id}"
 
+    async def aclose(self) -> None:
+        await self._redis.aclose()
+
     async def enqueue(
         self, kind: str, payload: dict[str, Any], idempotency_key: str, max_attempts: int = 3
     ) -> Job:
@@ -177,11 +179,22 @@ class RedisJobQueue:
         return job
 
     async def claim(self, timeout: float | None = None) -> Job | None:
-        redis_timeout = 0 if timeout is None else max(1, math.ceil(timeout))
-        result = await self._redis.blpop(f"{self._ns}:ready", timeout=redis_timeout)
-        if not result:
+        ready_key = f"{self._ns}:ready"
+        if timeout is None:
+            result = await self._redis.blpop(ready_key, timeout=0)
+            job_id = result[1] if result else None
+        else:
+            deadline = asyncio.get_running_loop().time() + max(0.0, timeout)
+            job_id = cast(bytes | str | None, await self._redis.lpop(ready_key))
+            while job_id is None:
+                remaining = deadline - asyncio.get_running_loop().time()
+                if remaining <= 0:
+                    return None
+                await asyncio.sleep(min(0.1, remaining))
+                job_id = cast(bytes | str | None, await self._redis.lpop(ready_key))
+        if not job_id:
             return None
-        job = await self._required(result[1])
+        job = await self._required(job_id)
         if job.state is not JobState.PENDING:
             return None
         job.state, job.attempts = JobState.RUNNING, job.attempts + 1

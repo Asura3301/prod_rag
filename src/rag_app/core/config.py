@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from functools import lru_cache
+from pathlib import Path
 from typing import Literal
 
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field, SecretStr, model_validator
@@ -24,20 +25,23 @@ class ProviderConfig(_ConfigModel):
 
 
 class LLMConfig(ProviderConfig):
-    model: str = Field(default="gpt-4o-mini", min_length=1)
+    provider: str = Field(default="local", min_length=1)
+    model: str = Field(default="gpt-oss-20b", min_length=1)
+    base_url: str | None = "http://127.0.0.1:1234/v1"
     temperature: float = Field(default=0.0, ge=0.0, le=2.0)
     max_tokens: int = Field(default=2048, gt=0)
 
 
 class EmbeddingConfig(ProviderConfig):
-    model: str = Field(default="text-embedding-3-small", min_length=1)
-    dimensions: int | None = Field(default=None, gt=0)
+    provider: str = Field(default="local", min_length=1)
+    model: str = Field(default="BAAI/bge-m3", min_length=1)
+    dimensions: int | None = Field(default=1024, gt=0)
     batch_size: int = Field(default=64, gt=0)
 
 
 class VectorStoreConfig(_ConfigModel):
-    provider: str = Field(default="memory", min_length=1)
-    url: str | None = None
+    provider: str = Field(default="qdrant", min_length=1)
+    url: str | None = "http://127.0.0.1:6333"
     api_key: SecretStr | None = None
     index_name: str = Field(default="documents", min_length=1)
     namespace: str = Field(default="default", min_length=1)
@@ -86,8 +90,14 @@ class Settings(BaseSettings):
     )
 
     app_name: str = Field(default="prod-rag", min_length=1)
+    runtime_mode: Literal["local", "distributed"] = "local"
     environment: Literal["development", "test", "staging", "production"] = "development"
     debug: bool = False
+    api_token: SecretStr | None = None
+    admin_token: SecretStr | None = None
+    redis_url: str = Field(default="redis://127.0.0.1:6379/0", min_length=1)
+    sqlite_path: Path = Path(".data/rag.sqlite3")
+    ingestion_root: Path = Path("data")
     llm: LLMConfig = Field(default_factory=LLMConfig)
     embeddings: EmbeddingConfig = Field(default_factory=EmbeddingConfig)
     vector_store: VectorStoreConfig = Field(default_factory=VectorStoreConfig)

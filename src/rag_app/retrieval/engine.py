@@ -417,13 +417,27 @@ class HybridRetriever:
             if settings.use_lexical
             else None
         )
-        dense_results = await dense_task
+        try:
+            dense_results = await dense_task
+            lexical = await lexical_task if lexical_task is not None else []
+        except BaseException:
+            dense_task.cancel()
+            if lexical_task is not None:
+                lexical_task.cancel()
+            await asyncio.gather(
+                *(
+                    task
+                    for task in (dense_task, lexical_task)
+                    if task is not None
+                ),
+                return_exceptions=True,
+            )
+            raise
         dense = [
             RetrievalCandidate.from_vector_result(item)
             for item in dense_results
             if metadata_matches(item.metadata, filters)
         ]
-        lexical = await lexical_task if lexical_task is not None else []
         lexical = [item for item in lexical if metadata_matches(item.metadata, filters)]
         diagnostics.timings_ms["candidate_search"] = (time.perf_counter() - started) * 1000
         diagnostics.dense_candidates = len(dense)

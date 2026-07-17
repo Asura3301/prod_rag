@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
 import os
+import time
 from collections.abc import Sequence
 from pathlib import Path
 
@@ -13,7 +15,7 @@ def _serve(args: argparse.Namespace) -> int:
     import uvicorn
 
     uvicorn.run(
-        "rag_app.api.app:create_app",
+        "rag_app.runtime.composition:create_runtime_app",
         factory=True,
         host=args.host,
         port=args.port,
@@ -55,7 +57,14 @@ def _ingest(args: argparse.Namespace) -> int:
 def _query(args: argparse.Namespace) -> int:
     import httpx
 
-    api_token = args.api_token or os.getenv("RAG_API_TOKEN")
+    from rag_app.core import get_settings
+
+    configured = get_settings().api_token
+    api_token = (
+        args.api_token
+        or os.getenv("RAG_API_TOKEN")
+        or (configured.get_secret_value() if configured else None)
+    )
     headers = {"Authorization": f"Bearer {api_token}"} if api_token else None
     response = httpx.post(
         f"{args.api_url.rstrip('/')}/api/v1/query",
@@ -89,6 +98,71 @@ def _evaluate(args: argparse.Namespace) -> int:
     return 0
 
 
+def _worker(args: argparse.Namespace) -> int:
+    del args
+    from rag_app.runtime import worker_main
+
+    worker_main()
+    return 0
+
+
+def _enqueue(args: argparse.Namespace) -> int:
+    import httpx
+
+    from rag_app.core import get_settings
+
+    configured = get_settings().api_token
+    api_token = (
+        args.api_token
+        or os.getenv("RAG_API_TOKEN")
+        or (configured.get_secret_value() if configured else None)
+    )
+    headers = {"Authorization": f"Bearer {api_token}"} if api_token else None
+    source = str(Path(args.source).expanduser().resolve())
+    response = httpx.post(
+        f"{args.api_url.rstrip('/')}/api/v1/ingestion/jobs",
+        json={"source": source, "metadata": {}, "idempotency_key": args.idempotency_key},
+        headers=headers,
+        timeout=args.timeout,
+    )
+    response.raise_for_status()
+    job = response.json()
+    if args.wait:
+        terminal = {"succeeded", "dead_letter", "cancelled"}
+        while job["state"] not in terminal:
+            time.sleep(0.5)
+            response = httpx.get(
+                f"{args.api_url.rstrip('/')}/api/v1/ingestion/jobs/{job['id']}",
+                headers=headers,
+                timeout=args.timeout,
+            )
+            response.raise_for_status()
+            job = response.json()
+    print(json.dumps(job, ensure_ascii=False, indent=2))
+    return int(job["state"] in {"dead_letter", "cancelled"})
+
+
+def _doctor(args: argparse.Namespace) -> int:
+    del args
+    from rag_app.core import get_settings
+    from rag_app.runtime import run_doctor
+
+    settings = get_settings()
+    checks = asyncio.run(
+        run_doctor(
+            llm_base_url=settings.llm.base_url or "",
+            llm_model=settings.llm.model,
+            redis_url=settings.redis_url,
+            qdrant_url=settings.vector_store.url or "",
+            ingestion_root=settings.ingestion_root,
+            sqlite_path=settings.sqlite_path,
+        )
+    )
+    for check in checks:
+        print(f"[{'OK' if check.ok else 'FAIL'}] {check.name}: {check.detail}")
+    return int(not all(check.ok for check in checks))
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="rag", description="Production RAG template CLI")
     subcommands = parser.add_subparsers(dest="command", required=True)
@@ -105,11 +179,28 @@ def build_parser() -> argparse.ArgumentParser:
 
     query = subcommands.add_parser("query", help="Query a running API")
     query.add_argument("query")
-    query.add_argument("--api-url", default="http://localhost:8000")
+    query.add_argument("--api-url", default="http://127.0.0.1:8000")
     query.add_argument("--api-token", help="Bearer token; defaults to RAG_API_TOKEN")
     query.add_argument("--top-k", type=int, default=5)
     query.add_argument("--timeout", type=float, default=60.0)
     query.set_defaults(handler=_query)
+
+    worker = subcommands.add_parser("worker", help="Run the local Redis ingestion worker")
+    worker.set_defaults(handler=_worker)
+
+    enqueue = subcommands.add_parser(
+        "enqueue", help="Submit a local file or directory to the worker"
+    )
+    enqueue.add_argument("source")
+    enqueue.add_argument("--api-url", default="http://127.0.0.1:8000")
+    enqueue.add_argument("--api-token", help="Bearer token; defaults to RAG_API_TOKEN")
+    enqueue.add_argument("--idempotency-key")
+    enqueue.add_argument("--timeout", type=float, default=60.0)
+    enqueue.add_argument("--wait", action="store_true")
+    enqueue.set_defaults(handler=_enqueue)
+
+    doctor = subcommands.add_parser("doctor", help="Check local runtime dependencies")
+    doctor.set_defaults(handler=_doctor)
 
     evaluate = subcommands.add_parser("evaluate", help="Inspect an evaluation dataset")
     evaluate.add_argument("--dataset", default="evals/golden_dataset.jsonl")

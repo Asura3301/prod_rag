@@ -6,6 +6,10 @@ import os
 from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import StrEnum
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from rag_app.core.config import LLMConfig as CoreLLMConfig
 
 
 class LLMProvider(StrEnum):
@@ -49,19 +53,42 @@ class LLMConfig:
             raise ValueError("base_url is only supported by OpenAI-compatible providers")
 
     @classmethod
+    def from_core(cls, config: CoreLLMConfig) -> LLMConfig:
+        """Adapt validated core settings to the provider runtime configuration."""
+
+        return cls(
+            provider=config.provider,
+            model=config.model,
+            api_key=config.api_key.get_secret_value() if config.api_key else None,
+            base_url=config.base_url,
+            temperature=config.temperature,
+            max_tokens=config.max_tokens,
+            timeout=config.timeout_seconds,
+            max_retries=config.max_retries,
+        )
+
+    @classmethod
     def from_env(
         cls,
         environ: Mapping[str, str] | None = None,
         *,
-        prefix: str = "RAG_LLM_",
+        prefix: str = "RAG_LLM__",
     ) -> LLMConfig:
-        """Load configuration without reading or importing a provider SDK."""
+        """Load canonical nested variables, with temporary legacy-key fallback."""
 
         env = os.environ if environ is None else environ
-        provider = LLMProvider(env.get(f"{prefix}PROVIDER", "openai_compatible").lower())
-        model = env.get(f"{prefix}MODEL") or env.get("MODEL_ID", "")
-        api_key = env.get(f"{prefix}API_KEY")
-        base_url = env.get(f"{prefix}BASE_URL")
+        legacy_prefix = "RAG_LLM_" if prefix == "RAG_LLM__" else None
+
+        def configured(name: str, *, legacy_name: str | None = None) -> str | None:
+            value = env.get(f"{prefix}{name}")
+            if value is not None or legacy_prefix is None:
+                return value
+            return env.get(f"{legacy_prefix}{legacy_name or name}")
+
+        provider = LLMProvider((configured("PROVIDER") or "openai_compatible").lower())
+        model = configured("MODEL") or env.get("MODEL_ID", "")
+        api_key = configured("API_KEY")
+        base_url = configured("BASE_URL")
 
         if provider is LLMProvider.ANTHROPIC:
             api_key = api_key or env.get("ANTHROPIC_API_KEY")
@@ -74,8 +101,8 @@ class LLMConfig:
             model=model,
             api_key=api_key,
             base_url=base_url,
-            temperature=float(env.get(f"{prefix}TEMPERATURE", "0")),
-            max_tokens=int(env.get(f"{prefix}MAX_TOKENS", "2048")),
-            timeout=float(env.get(f"{prefix}TIMEOUT", "60")),
-            max_retries=int(env.get(f"{prefix}MAX_RETRIES", "2")),
+            temperature=float(configured("TEMPERATURE") or "0"),
+            max_tokens=int(configured("MAX_TOKENS") or "2048"),
+            timeout=float(configured("TIMEOUT_SECONDS", legacy_name="TIMEOUT") or "60"),
+            max_retries=int(configured("MAX_RETRIES") or "2"),
         )
