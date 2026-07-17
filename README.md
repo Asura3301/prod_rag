@@ -93,19 +93,19 @@ Qdrant/SQLite runtime.
 - [Architecture](docs/architecture.md), [deployment](docs/deployment.md),
   [security](docs/security.md), and [evaluation](docs/evaluation.md): broader design material.
 
-## Production limitations
+## Future roadmap
 
-The Windows-local flow is functional, but it is not a production deployment:
+Planned updates will extend the functional Windows-local workflow toward distributed production
+deployments:
 
-- SQLite is a local document registry, and the API and worker must share the same host filesystem.
-- Redis and Qdrant are bound to loopback for local development; no TLS or service authentication is
-  configured by default.
-- LM Studio is a desktop inference server, not a replicated or hardened model-serving tier.
-- Rate limiting is process-local, ingestion reads host files, sparse vectors use the deterministic
-  hash implementation, and production tenant/ACL enforcement still requires deployment-specific
-  composition.
-- Backups, secret management, observability, malware scanning, resource limits, high availability,
-  and reviewed domain evaluations remain operator responsibilities.
+- Add a shared PostgreSQL document registry so API and worker instances can run on separate hosts.
+- Provide secured Redis and Qdrant configurations with TLS, authentication, and network isolation.
+- Support scalable model-serving providers alongside LM Studio for replicated inference.
+- Add distributed rate limiting, stronger tenant and ACL enforcement, and production-grade sparse
+  embeddings.
+- Introduce managed secrets, automated backups, malware scanning, resource limits, and high
+  availability.
+- Expand OpenTelemetry observability and domain-specific evaluation and regression suites.
 
 ## Validation
 
