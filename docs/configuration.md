@@ -100,15 +100,19 @@ while Redis stores job state. The API and worker must resolve `RAG_SQLITE_PATH` 
 The supported Windows-local recipe is:
 
 ```dotenv
+# Optional when LM Studio is installed outside its standard location:
+# LM_STUDIO_EXE=C:\Tools\LM Studio\LM Studio.exe
 RAG_LLM__PROVIDER=local
 RAG_LLM__MODEL=gpt-oss-20b
 RAG_LLM__BASE_URL=http://127.0.0.1:1234/v1
 RAG_LLM__API_KEY=
 ```
 
-LM Studio must have `gpt-oss-20b` loaded and expose it under that exact model identifier. The base
-URL includes `/v1`; the application uses the OpenAI-compatible API. An empty API key is appropriate
-for the default unauthenticated local LM Studio server.
+`RAG_LLM__MODEL` is the identifier exposed by the model you configure in LM Studio. The control
+center only opens LM Studio Desktop; it never loads/unloads a model or starts/stops the API server.
+`LM_STUDIO_EXE` optionally overrides the desktop executable path. The base URL includes `/v1`; the
+application uses the OpenAI-compatible API. An empty API key is appropriate for the default
+unauthenticated local LM Studio server.
 
 `TIMEOUT_SECONDS`, `MAX_RETRIES`, `TEMPERATURE`, and `MAX_TOKENS` control provider requests and
 generation. A locally reachable endpoint is not evidence that the model is suitable for a

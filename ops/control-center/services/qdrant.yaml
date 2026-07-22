@@ -1,0 +1,19 @@
+name: qdrant
+display_name: Qdrant
+description: Dense and sparse vector index
+driver: docker_compose
+enabled: true
+dependencies: []
+log_file: .data/control-center/logs/qdrant.log
+
+health:
+  type: http
+  url: "http://127.0.0.1:${QDRANT_PORT:-6333}/healthz"
+  timeout_seconds: 3
+  interval_seconds: 2
+  retries: 30
+  expected_statuses: [200]
+
+compose_file: docker-compose.yml
+compose_service: qdrant
+profiles: [qdrant]

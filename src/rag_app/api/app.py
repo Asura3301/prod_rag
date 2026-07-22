@@ -54,6 +54,20 @@ def create_app(
     expected_admin_token = admin_token or os.getenv("RAG_ADMIN_TOKEN")
     expected_api_token = api_token or os.getenv("RAG_API_TOKEN")
     request_times: dict[str, deque[float]] = defaultdict(deque)
+    query_times: deque[float] = deque()
+    query_requests_total = 0
+    query_latency_total_ms = 0.0
+    query_latency_last_ms = 0.0
+
+    def record_query(latency_ms: float) -> None:
+        nonlocal query_latency_last_ms, query_latency_total_ms, query_requests_total
+        query_requests_total += 1
+        query_latency_last_ms = max(0.0, float(latency_ms))
+        query_latency_total_ms += query_latency_last_ms
+        now = time.monotonic()
+        query_times.append(now)
+        while query_times and now - query_times[0] >= 60:
+            query_times.popleft()
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -212,12 +226,15 @@ def create_app(
 
     @app.post("/api/v1/query", response_model=QueryResponse, tags=["query"])
     async def query(request: QueryRequest) -> QueryResponse:
-        return await rag_service.query(request.query, request.top_k, request.filters)
+        result = await rag_service.query(request.query, request.top_k, request.filters)
+        record_query(result.latency_ms)
+        return result
 
     @app.post("/api/v1/query/stream", tags=["query"])
     async def stream_query(request: QueryRequest) -> StreamingResponse:
         async def events() -> AsyncIterator[str]:
             result = await rag_service.query(request.query, request.top_k, request.filters)
+            record_query(result.latency_ms)
             for token in result.answer.split():
                 yield _sse("token", {"text": f"{token} "})
             yield _sse(
@@ -245,10 +262,28 @@ def create_app(
     async def metrics() -> Response:
         jobs = await job_queue.list()
         states = _count_states(jobs)
+        now = time.monotonic()
+        while query_times and now - query_times[0] >= 60:
+            query_times.popleft()
+        average_latency = (
+            query_latency_total_ms / query_requests_total if query_requests_total else 0.0
+        )
         body = [
             "# HELP rag_jobs_total Number of ingestion jobs by state.",
             "# TYPE rag_jobs_total gauge",
             *(f'rag_jobs_total{{state="{state}"}} {count}' for state, count in states.items()),
+            "# HELP rag_query_requests_total Completed RAG query requests.",
+            "# TYPE rag_query_requests_total counter",
+            f"rag_query_requests_total {query_requests_total}",
+            "# HELP rag_query_requests_per_minute Completed RAG queries in the last minute.",
+            "# TYPE rag_query_requests_per_minute gauge",
+            f"rag_query_requests_per_minute {len(query_times)}",
+            "# HELP rag_query_latency_last_ms Last completed RAG query latency in milliseconds.",
+            "# TYPE rag_query_latency_last_ms gauge",
+            f"rag_query_latency_last_ms {query_latency_last_ms:.3f}",
+            "# HELP rag_query_latency_average_ms Mean completed RAG query latency in milliseconds.",
+            "# TYPE rag_query_latency_average_ms gauge",
+            f"rag_query_latency_average_ms {average_latency:.3f}",
         ]
         return Response("\n".join(body) + "\n", media_type="text/plain; version=0.0.4")
 

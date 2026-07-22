@@ -1,0 +1,28 @@
+name: api
+display_name: Backend API
+description: Canonical persistent FastAPI RAG runtime
+driver: process
+enabled: true
+dependencies: [lm_studio, redis, qdrant]
+log_file: .data/control-center/logs/api.log
+
+health:
+  type: http
+  url: "http://${RAG_CONTROL_API_HOST:-127.0.0.1}:${RAG_CONTROL_API_PORT:-8000}/health/ready"
+  timeout_seconds: 5
+  interval_seconds: 3
+  retries: 180
+  expected_statuses: [200]
+
+command:
+  - uv
+  - run
+  - rag
+  - serve
+  - --host
+  - "${RAG_CONTROL_API_HOST:-127.0.0.1}"
+  - --port
+  - "${RAG_CONTROL_API_PORT:-8000}"
+cwd: .
+environment:
+  PYTHONUNBUFFERED: "1"

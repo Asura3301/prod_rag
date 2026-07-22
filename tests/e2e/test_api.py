@@ -43,6 +43,10 @@ def test_query_documents_stream_and_admin_protection() -> None:
         metrics = client.get("/metrics", headers={"Authorization": "Bearer test-secret"})
         assert metrics.status_code == 200
         assert "rag_jobs_total" in metrics.text
+        assert "rag_query_requests_total 2" in metrics.text
+        assert "rag_query_requests_per_minute 2" in metrics.text
+        assert "rag_query_latency_last_ms" in metrics.text
+        assert "rag_query_latency_average_ms" in metrics.text
 
 
 def test_document_creation_api_auth_rate_limit_and_request_id() -> None:

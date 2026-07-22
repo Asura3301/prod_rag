@@ -1,0 +1,26 @@
+version: 1
+project_name: prod-rag
+
+# Paths are resolved from the repository root. Runtime state and logs are deliberately
+# kept under .data so process metadata, PIDs, and application output are never committed.
+runtime_dir: .data/control-center/runtime
+logs_dir: .data/control-center/logs
+services_dir: ops/control-center/services
+
+# The API may need to download and initialize BGE-M3 on its first startup.
+startup_timeout_seconds: 600
+shutdown_timeout_seconds: 30
+lifecycle_lock_timeout_seconds: 5
+
+# GPU telemetry is best effort. Set these to true only on hosts where GPU/CUDA is a
+# hard requirement; CPU-mode LM Studio remains supported by default.
+required_environment: []
+required_python_packages: [qdrant_client, sentence_transformers]
+required_uv_extras: [qdrant, local-models]
+require_gpu: false
+require_cuda: false
+
+# The API exposes these counters on its admin-protected Prometheus endpoint. The
+# token is read from the named environment variable and is never stored here.
+ai_metrics_url: http://127.0.0.1:8000/metrics
+ai_metrics_token_env: RAG_ADMIN_TOKEN

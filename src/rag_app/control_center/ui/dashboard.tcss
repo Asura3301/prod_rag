@@ -1,0 +1,271 @@
+/* prod-rag Project Control Center -- restrained dark operations theme */
+
+$surface: #0f131b;
+$surface-raised: #151a24;
+$surface-hover: #1b2230;
+$border: #252c3a;
+$text: #dce3ed;
+$muted: #7f8ca3;
+$accent: #6e8cff;
+
+Screen {
+    background: #080b11;
+    color: $text;
+}
+
+Header {
+    height: 1;
+    background: #0c1017;
+    color: $text;
+}
+
+Footer {
+    height: 1;
+    background: #0c1017;
+    color: $muted;
+}
+
+#dashboard-shell {
+    height: 1fr;
+    padding: 1 2 0 2;
+}
+
+#project-bar {
+    height: 3;
+    padding: 0 1;
+    background: $surface;
+    border: solid $border;
+    content-align: left middle;
+}
+
+#project-brand {
+    width: 1fr;
+    height: 1;
+}
+
+#project-status {
+    width: auto;
+    height: 1;
+    min-width: 28;
+    text-align: right;
+}
+
+#main-tabs {
+    height: 1fr;
+    margin-top: 1;
+}
+
+TabbedContent > ContentSwitcher {
+    background: transparent;
+    border: none;
+}
+
+Tabs {
+    background: transparent;
+    border-bottom: solid $border;
+}
+
+Tab {
+    color: $muted;
+    background: transparent;
+    padding: 0 2;
+}
+
+Tab.-active {
+    color: #f4f7fb;
+    background: $surface-raised;
+    text-style: bold;
+}
+
+.view-scroll,
+.panel-view {
+    height: 1fr;
+    padding: 1;
+    background: transparent;
+}
+
+.section-title {
+    height: 2;
+    margin-top: 1;
+    content-align: left middle;
+}
+
+.metrics-grid {
+    grid-size: 4 1;
+    grid-columns: 1fr 1fr 1fr 1fr;
+    grid-rows: 6;
+    grid-gutter: 1 1;
+    height: 6;
+}
+
+.metric-card {
+    height: 6;
+    padding: 1 2;
+    background: $surface-raised;
+    border: solid $border;
+}
+
+.metric-card:hover {
+    background: $surface-hover;
+    border: solid #35405a;
+}
+
+.feature-status {
+    height: 4;
+    padding: 1 2;
+    background: $surface-raised;
+    border-left: thick $accent;
+}
+
+.hint {
+    margin-top: 1;
+    color: $muted;
+    padding: 1 2;
+    background: $surface;
+}
+
+DataTable {
+    height: 14;
+    background: $surface;
+    border: solid $border;
+    color: $text;
+}
+
+DataTable > .datatable--header {
+    background: #111722;
+    color: #aeb8c8;
+    text-style: bold;
+}
+
+DataTable > .datatable--cursor {
+    background: #202a3d;
+    color: #ffffff;
+}
+
+#selection-label {
+    height: 2;
+    color: $muted;
+    padding: 0 1;
+    content-align: left middle;
+}
+
+.action-row {
+    height: 4;
+    scrollbar-size-horizontal: 1;
+}
+
+.action-row Button {
+    min-width: 18;
+    margin-right: 1;
+}
+
+.toolbar {
+    height: 4;
+    content-align: left middle;
+}
+
+.toolbar Button {
+    margin-right: 2;
+}
+
+#diagnostic-summary {
+    width: 1fr;
+    height: 3;
+    content-align: left middle;
+}
+
+#diagnostics-table,
+#config-table {
+    height: 1fr;
+    min-height: 15;
+}
+
+#config-summary {
+    height: 6;
+    padding: 1 2;
+    margin-bottom: 1;
+    background: $surface-raised;
+    border: solid $border;
+}
+
+#log-toolbar {
+    height: 4;
+    content-align: left middle;
+}
+
+#log-service-select {
+    width: 40;
+    margin-right: 1;
+}
+
+#log-toolbar Button {
+    margin-right: 1;
+}
+
+#live-log {
+    height: 1fr;
+    min-height: 12;
+    padding: 1;
+    background: #06080d;
+    border: solid $border;
+    color: #cdd6e3;
+    scrollbar-color: #35405a #0b0f16;
+}
+
+Button {
+    height: 3;
+    border: none;
+}
+
+Button:focus {
+    text-style: bold;
+    border: tall $accent;
+}
+
+Screen.compact .metrics-grid {
+    grid-size: 2 2;
+    grid-columns: 1fr 1fr;
+    grid-rows: 6 6;
+    height: 13;
+}
+
+Screen.compact #project-brand {
+    width: 1fr;
+}
+
+Screen.compact #project-status {
+    min-width: 22;
+}
+
+Screen.narrow #dashboard-shell {
+    padding: 0;
+}
+
+Screen.narrow #project-bar {
+    height: 5;
+    layout: vertical;
+    padding: 1;
+}
+
+Screen.narrow #project-brand,
+Screen.narrow #project-status {
+    width: 1fr;
+    min-width: 0;
+    text-align: left;
+}
+
+Screen.narrow .metrics-grid {
+    grid-size: 1 4;
+    grid-columns: 1fr;
+    grid-rows: 6 6 6 6;
+    height: 27;
+}
+
+Screen.narrow #log-toolbar {
+    height: 7;
+    layout: vertical;
+}
+
+Screen.narrow #log-service-select {
+    width: 1fr;
+}

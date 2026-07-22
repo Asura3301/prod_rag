@@ -1,0 +1,20 @@
+name: worker
+display_name: Ingestion Worker
+description: Redis-backed local file ingestion and indexing worker
+driver: process
+enabled: true
+dependencies: [redis, qdrant]
+log_file: .data/control-center/logs/worker.log
+
+# The worker has no HTTP endpoint. A live, identity-checked managed process is its
+# readiness contract; Redis and Qdrant are checked independently as dependencies.
+health:
+  type: process
+  timeout_seconds: 2
+  interval_seconds: 1
+  retries: 15
+
+command: [uv, run, rag, worker]
+cwd: .
+environment:
+  PYTHONUNBUFFERED: "1"

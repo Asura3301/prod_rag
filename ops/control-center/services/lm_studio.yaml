@@ -1,0 +1,16 @@
+name: lm_studio
+display_name: LM Studio
+description: Launch-only LM Studio desktop application
+driver: lm_studio
+enabled: true
+dependencies: []
+log_file: .data/control-center/logs/lm-studio.log
+
+health:
+  type: process
+  timeout_seconds: 2
+  interval_seconds: 1
+  retries: 30
+
+# The dashboard only opens LM Studio Desktop. Server/model setup remains in LM Studio.
+model_identifier: "${RAG_LLM__MODEL:-gpt-oss-20b}"

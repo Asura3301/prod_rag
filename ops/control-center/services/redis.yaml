@@ -1,0 +1,19 @@
+name: redis
+display_name: Redis
+description: Ingestion queue, job state, and idempotency storage
+driver: docker_compose
+enabled: true
+dependencies: []
+log_file: .data/control-center/logs/redis.log
+
+health:
+  type: tcp
+  host: 127.0.0.1
+  port: "${REDIS_PORT:-6379}"
+  timeout_seconds: 3
+  interval_seconds: 1
+  retries: 30
+
+compose_file: docker-compose.yml
+compose_service: redis
+profiles: []

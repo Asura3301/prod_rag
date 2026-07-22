@@ -21,6 +21,7 @@ python --version
 uv --version
 docker --version
 docker compose version
+lms --version
 ```
 
 If needed, install Python through uv:
@@ -41,16 +42,16 @@ The first use of `BAAI/bge-m3` may download a large model and initialize it. Sta
 take noticeably longer the first time. Keep network access, cache permissions, and sufficient disk
 space available.
 
-## 3. Configure LM Studio
+## 3. Prepare LM Studio
 
 In LM Studio:
 
-1. Install and load the model whose served identifier is `gpt-oss-20b`.
-2. Start the OpenAI-compatible local server.
-3. Confirm it listens on `127.0.0.1:1234`.
+1. Install and open LM Studio once.
+2. Download `openai/gpt-oss-20b` (or another model that fits the machine).
+3. Load the model and configure/start the local API server in LM Studio.
 
-The application uses the base URL `http://127.0.0.1:1234/v1`. The diagnostics command checks
-`GET /v1/models` and verifies that `gpt-oss-20b` is advertised.
+The control center only opens the visible desktop application. It does not manage the daemon,
+models, or API server. Keep the identifier served by LM Studio aligned with `RAG_LLM__MODEL`.
 
 ## 4. Create `.env`
 
@@ -108,7 +109,25 @@ The 1024 dimension is part of the index contract for `BAAI/bge-m3`. If an existi
 collection was created with a different dimension, create a new collection name or intentionally
 delete the disposable local collection before retrying.
 
-## 5. Start Redis and Qdrant
+## 5. Start the project control center
+
+```powershell
+uv run rag dashboard
+```
+
+Use **Start all**. For non-interactive startup use:
+
+```powershell
+.\scripts\control-center\start_all.ps1
+```
+
+This opens LM Studio Desktop, then starts Redis, Qdrant, the API, and the worker in dependency
+order. LM Studio model/server readiness remains under your control in the desktop application.
+Continue at step 10 after the startup summary reports success.
+
+The remaining steps document the equivalent manual workflow for diagnostics and recovery.
+
+## 6. Start Redis and Qdrant manually
 
 ```powershell
 docker compose --profile qdrant up -d redis qdrant
@@ -123,7 +142,7 @@ The Compose file publishes:
 Override the host ports with `REDIS_PORT` or `QDRANT_PORT`, and update the corresponding URLs in
 `.env`. The loopback bindings intentionally prevent access from other hosts.
 
-## 6. Run diagnostics
+## 7. Run diagnostics
 
 ```powershell
 uv run rag doctor
@@ -141,7 +160,7 @@ The command creates missing ingestion and SQLite parent directories, but it does
 send a generation request, or prove that a document can be indexed. Complete the following
 end-to-end steps as well.
 
-## 7. Start the API
+## 8. Start the API manually
 
 Open a dedicated PowerShell window:
 
@@ -164,7 +183,7 @@ SQLite document metadata, LM Studio generation, and a Redis job queue. This diff
 `rag_app.api.create_app()` directly, whose uninjected defaults remain an in-memory demo for tests
 and custom composition.
 
-## 8. Start the worker
+## 9. Start the worker manually
 
 Open another dedicated PowerShell window:
 
@@ -175,7 +194,7 @@ uv run rag worker
 Keep both `rag serve` and `rag worker` running. They use the same Redis queue, Qdrant collection,
 SQLite file, embedding model, and `.env` configuration.
 
-## 9. Enqueue a document and query it
+## 10. Enqueue a document and query it
 
 Put a supported file under `data/documents`, for example:
 
@@ -203,9 +222,15 @@ uv run rag query "What does the document say?"
 The CLI reads `RAG_API_TOKEN` from `.env` and calls the running API. Responses contain an answer,
 citations, and latency.
 
-## 10. Stop local infrastructure
+## 11. Stop local infrastructure
 
-Stop the API and worker with `Ctrl+C`, then:
+When services were started by the control center, stop them gracefully with:
+
+```powershell
+.\scripts\control-center\stop_all.ps1
+```
+
+For the manual workflow, stop the API and worker with `Ctrl+C`, then:
 
 ```powershell
 docker compose --profile qdrant down
